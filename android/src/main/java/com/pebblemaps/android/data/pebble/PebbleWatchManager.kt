@@ -46,8 +46,6 @@ class PebbleWatchManager(private val context: Context) {
 
     private val ackReceiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            val uuid = intent.getSerializableExtra(APP_UUID_KEY) as? UUID
-            if (uuid != APP_UUID) return
             val tx = intent.getIntExtra(TRANSACTION_ID_KEY, -1)
             Log.d(TAG, "ACK received tx=$tx")
             ackReceived = true
@@ -57,8 +55,6 @@ class PebbleWatchManager(private val context: Context) {
 
     private val nackReceiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            val uuid = intent.getSerializableExtra(APP_UUID_KEY) as? UUID
-            if (uuid != APP_UUID) return
             val tx = intent.getIntExtra(TRANSACTION_ID_KEY, -1)
             Log.w(TAG, "NACK received tx=$tx")
             ackReceived = true
