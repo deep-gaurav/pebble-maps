@@ -230,56 +230,69 @@ class PebbleWatchManager(private val context: Context) {
     ): List<LatLng> {
         if (frame.routePoints.isEmpty()) return listOf(frame.currentLocation)
 
-        // 1. Stable base sample across the whole route
-        val baseSample = if (frame.routePoints.size <= MAX_ROUTE_POINTS) {
-            frame.routePoints
-        } else {
-            val step = frame.routePoints.size.toFloat() / MAX_ROUTE_POINTS
-            (0 until MAX_ROUTE_POINTS).map { i ->
-                frame.routePoints[(i * step).toInt().coerceIn(0, frame.routePoints.lastIndex)]
+        // Find nearest route point to current location
+        var nearestIdx = 0
+        var bestDist = Double.MAX_VALUE
+        for (i in frame.routePoints.indices) {
+            val d = latLngDistanceSq(frame.routePoints[i], frame.currentLocation)
+            if (d < bestDist) {
+                bestDist = d
+                nearestIdx = i
             }
         }
 
-        // 2. Keep only base points inside the viewport
-        val visible = baseSample.filter {
-            it.lat in minLat..maxLat && it.lng in minLng..maxLng
-        }
-
-        // 3. Drop points on top of current location to avoid duplicate dots
         val minDistSq = 1e-10
-        val deduped = visible.filter { latLngDistanceSq(it, frame.currentLocation) > minDistSq }
-
-        val result = mutableListOf(frame.currentLocation)
-        result.addAll(deduped)
-
         val dest = frame.routePoints.lastOrNull()
         val destVisible = dest != null && dest.lat in minLat..maxLat && dest.lng in minLng..maxLng
 
-        if (result.size <= MAX_ROUTE_POINTS) {
-            if (destVisible) {
-                val d = dest!!
-                if (!result.any { latLngDistanceSq(it, d) < 1e-16 }) {
-                    result.add(d)
-                }
+        // If nearest point is outside viewport, user is off-route; just show visible points
+        val nearest = frame.routePoints[nearestIdx]
+        if (nearest.lat !in minLat..maxLat || nearest.lng !in minLng..maxLng) {
+            val visible = frame.routePoints.filter {
+                it.lat in minLat..maxLat && it.lng in minLng..maxLng && latLngDistanceSq(it, frame.currentLocation) > minDistSq
+            }
+            val result = mutableListOf(frame.currentLocation)
+            result.addAll(visible.take(MAX_ROUTE_POINTS - 1))
+            if (destVisible && dest != null && !result.any { latLngDistanceSq(it, dest) < 1e-16 }) {
+                if (result.size < MAX_ROUTE_POINTS) result.add(dest) else result[result.lastIndex] = dest
             }
             return result
         }
 
-        // 4. Sample visible points down evenly, preserving destination if visible
-        val keepCount = MAX_ROUTE_POINTS - 1
-        val step = deduped.size.toFloat() / keepCount
-        val sampled = (0 until keepCount).map { i ->
-            deduped[(i * step).toInt().coerceIn(0, deduped.lastIndex)]
-        }.toMutableList()
+        // Build contiguous window around nearestIdx that stays inside viewport
+        val window = mutableListOf<LatLng>()
+        window.add(nearest)
 
-        if (destVisible) {
-            val d = dest!!
-            if (!sampled.any { latLngDistanceSq(it, d) < 1e-16 }) {
-                sampled[keepCount - 1] = d
+        var low = nearestIdx - 1
+        while (low >= 0 && window.size < MAX_ROUTE_POINTS) {
+            val p = frame.routePoints[low]
+            if (p.lat in minLat..maxLat && p.lng in minLng..maxLng) {
+                window.add(0, p)
+            } else {
+                break
             }
+            low--
         }
 
-        return mutableListOf(frame.currentLocation).apply { addAll(sampled) }
+        var high = nearestIdx + 1
+        while (high < frame.routePoints.size && window.size < MAX_ROUTE_POINTS) {
+            val p = frame.routePoints[high]
+            if (p.lat in minLat..maxLat && p.lng in minLng..maxLng) {
+                window.add(p)
+            } else {
+                break
+            }
+            high++
+        }
+
+        val deduped = window.filter { latLngDistanceSq(it, frame.currentLocation) > minDistSq }
+        val result = mutableListOf(frame.currentLocation)
+        result.addAll(deduped.take(MAX_ROUTE_POINTS - 1))
+
+        if (destVisible && dest != null && !result.any { latLngDistanceSq(it, dest) < 1e-16 }) {
+            if (result.size < MAX_ROUTE_POINTS) result.add(dest) else result[result.lastIndex] = dest
+        }
+        return result
     }
 
     private fun packPointsToViewport(

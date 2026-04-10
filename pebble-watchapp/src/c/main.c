@@ -81,18 +81,37 @@ static void update_data_from_dict(DictionaryIterator *iter) {
   }
 }
 
-static const char* get_turn_arrow(uint8_t dir) {
+static void draw_turn_arrow_shape(GContext *ctx, GPoint center, uint8_t dir) {
+  if (dir == 0) return;
+
+  int32_t angle = 0;
   switch (dir) {
-    case 1: return "\u2191"; // STRAIGHT
-    case 2: return "\u2196"; // SLIGHT_LEFT
-    case 3: return "\u2190"; // LEFT
-    case 4: return "\u21d0"; // SHARP_LEFT
-    case 5: return "\u2197"; // SLIGHT_RIGHT
-    case 6: return "\u2192"; // RIGHT
-    case 7: return "\u21d2"; // SHARP_RIGHT
-    case 8: return "\u21ba"; // UTURN
-    default: return "";
+    case 2: angle = -4500; break;  // SLIGHT_LEFT
+    case 3: angle = -9000; break;  // LEFT
+    case 4: angle = -13500; break; // SHARP_LEFT
+    case 5: angle = 4500; break;   // SLIGHT_RIGHT
+    case 6: angle = 9000; break;   // RIGHT
+    case 7: angle = 13500; break;  // SHARP_RIGHT
+    case 8: angle = 18000; break;  // UTURN
+    default: angle = 0; break;     // STRAIGHT
   }
+
+  GPoint tip = { center.x, center.y - 12 };
+  GPoint left = { center.x - 8, center.y + 4 };
+  GPoint right = { center.x + 8, center.y + 4 };
+  GPoint stem = { center.x, center.y + 8 };
+
+  tip = rotate_point(tip, center, angle);
+  left = rotate_point(left, center, angle);
+  right = rotate_point(right, center, angle);
+  stem = rotate_point(stem, center, angle);
+
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  graphics_context_set_stroke_width(ctx, 3);
+  graphics_draw_line(ctx, tip, left);
+  graphics_draw_line(ctx, tip, right);
+  graphics_draw_line(ctx, left, stem);
+  graphics_draw_line(ctx, right, stem);
 }
 
 static void format_distance(int32_t meters, char *buf, size_t size) {
@@ -134,37 +153,15 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     graphics_fill_circle(ctx, rotated[s_current_loc_index], 5);
   }
 
-  // Turn arrow
-  const char *arrow = get_turn_arrow(s_turn_direction);
-  if (arrow[0] != '\0') {
-    graphics_context_set_text_color(ctx, GColorBlack);
-    graphics_draw_text(ctx, arrow, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
-                       GRect(0, bounds.size.h * 0.05, bounds.size.w, 40),
-                       GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
-  }
+  // Turn arrow (drawn as vector shape at bottom)
+  draw_turn_arrow_shape(ctx, GPoint(bounds.size.w / 2, bounds.size.h - 38), s_turn_direction);
 
-  // Distance to turn
+  // Distance to turn (bottom text)
   char dist_buf[16];
   format_distance(s_distance_to_turn, dist_buf, sizeof(dist_buf));
   graphics_context_set_text_color(ctx, GColorBlack);
   graphics_draw_text(ctx, dist_buf, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(0, bounds.size.h * 0.25, bounds.size.w, 30),
-                     GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
-
-  // Street name
-  if (s_street_name[0] != '\0') {
-    graphics_context_set_text_color(ctx, GColorBlack);
-    graphics_draw_text(ctx, s_street_name, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                       GRect(0, bounds.size.h * 0.72, bounds.size.w, 30),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-  }
-
-  // Remaining distance
-  char remaining_buf[16];
-  format_distance(s_distance_remaining, remaining_buf, sizeof(remaining_buf));
-  graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, remaining_buf, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(0, bounds.size.h * 0.85, bounds.size.w, 30),
+                     GRect(0, bounds.size.h - 18, bounds.size.w, 18),
                      GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
 }
 
