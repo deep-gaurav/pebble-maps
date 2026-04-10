@@ -20,7 +20,20 @@
       "STREET_NAME": 3,
       "NUM_ROUTE_POINTS": 4,
       "ROUTE_POINTS": 5,
-      "CURRENT_LOC_INDEX": 6
+      "CURRENT_LOC_INDEX": 6,
+      "DESTINATION_INDEX": 7,
+      "BEARING": 8,
+      "SCREEN_WIDTH": 10,
+      "SCREEN_HEIGHT": 11,
+      "BITMAP_CHUNK_INDEX": 12,
+      "BITMAP_TOTAL_CHUNKS": 13,
+      "BITMAP_DATA": 14,
+      "TILE_INDEX": 15,
+      "TILE_TOTAL": 16,
+      "TILE_WIDTH": 17,
+      "TILE_HEIGHT": 18,
+      "BITMAP_FORMAT": 19,
+      "BITMAP_ACK": 20
     },
     "resources": {
       "media": []

@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -106,7 +105,8 @@ fun ActiveNavigationScreen(
                 turnDirection = turnDirection,
                 distanceToNextTurn = mock.distanceToNextTurn,
                 distanceRemaining = mock.totalRemainingDistance,
-                streetName = streetName
+                streetName = streetName,
+                bearing = mock.smoothedBearing
             )
             pebbleManager.postWatchFrame(frame)
         }
@@ -322,7 +322,7 @@ fun BottomNavigationPanel(
                         valueRange = 5f..60f,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    
+
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -336,7 +336,7 @@ fun BottomNavigationPanel(
                             )
                             Text(if (isRunning) "Pause" else "Resume")
                         }
-                        
+
                         Button(onClick = onStop) {
                             Icon(Icons.Default.Stop, contentDescription = null)
                             Text("Stop")

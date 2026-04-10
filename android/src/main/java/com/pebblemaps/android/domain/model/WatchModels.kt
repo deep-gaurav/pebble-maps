@@ -11,7 +11,8 @@ data class WatchFrame(
     val turnDirection: TurnDirection,
     val distanceToNextTurn: Double,
     val distanceRemaining: Double,
-    val streetName: String?
+    val streetName: String?,
+    val bearing: Float = 0f
 )
 
 enum class TurnDirection {

@@ -12,7 +12,11 @@ import com.getpebble.android.kit.PebbleKit
 import com.getpebble.android.kit.util.PebbleDictionary
 import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.WatchFrame
+import com.pebblemaps.android.domain.model.WatchRenderConfig
 import java.util.UUID
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
 
 class PebbleWatchManager(private val context: Context) {
 
@@ -27,13 +31,17 @@ class PebbleWatchManager(private val context: Context) {
         const val KEY_NUM_ROUTE_POINTS = 4
         const val KEY_ROUTE_POINTS = 5
         const val KEY_CURRENT_LOC_INDEX = 6
+        const val KEY_DESTINATION_INDEX = 7
+        const val KEY_BEARING = 8
+        const val KEY_SCREEN_WIDTH = 10
+        const val KEY_SCREEN_HEIGHT = 11
 
         const val MAX_ROUTE_POINTS = 20
         private const val MIN_SEND_INTERVAL_MS = 500L
 
         private const val INTENT_APP_RECEIVE_ACK = "com.getpebble.action.app.RECEIVE_ACK"
         private const val INTENT_APP_RECEIVE_NACK = "com.getpebble.action.app.RECEIVE_NACK"
-        private const val APP_UUID_KEY = "uuid"
+        private const val INTENT_APP_RECEIVE_DATA = "com.getpebble.action.app.RECEIVE_DATA"
         private const val TRANSACTION_ID_KEY = "transaction_id"
     }
 
@@ -43,10 +51,18 @@ class PebbleWatchManager(private val context: Context) {
     @Volatile
     private var ackReceived = true
     private var isRunning = false
+    private var nextTransactionId = 0
+    private var lastSentTransactionId = -1
+
+    private var watchConfig = WatchRenderConfig(176, 176)
 
     private val ackReceiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val tx = intent.getIntExtra(TRANSACTION_ID_KEY, -1)
+            if (tx != lastSentTransactionId) {
+                Log.d(TAG, "ACK ignored for tx=$tx (expected $lastSentTransactionId)")
+                return
+            }
             Log.d(TAG, "ACK received tx=$tx")
             ackReceived = true
             scheduleSend()
@@ -56,9 +72,25 @@ class PebbleWatchManager(private val context: Context) {
     private val nackReceiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val tx = intent.getIntExtra(TRANSACTION_ID_KEY, -1)
+            if (tx != lastSentTransactionId) {
+                Log.d(TAG, "NACK ignored for tx=$tx (expected $lastSentTransactionId)")
+                return
+            }
             Log.w(TAG, "NACK received tx=$tx")
             ackReceived = true
             scheduleSend()
+        }
+    }
+
+    private val dataReceiver = object : PebbleKit.PebbleDataReceiver(APP_UUID) {
+        override fun receiveData(context: Context, transactionId: Int, dict: PebbleDictionary) {
+            PebbleKit.sendAckToPebble(context, transactionId)
+            val width = dict.getInteger(KEY_SCREEN_WIDTH)
+            val height = dict.getInteger(KEY_SCREEN_HEIGHT)
+            if (width != null && height != null) {
+                watchConfig = WatchRenderConfig(width.toInt(), height.toInt())
+                Log.d(TAG, "Watch reported size: ${watchConfig.width}x${watchConfig.height}")
+            }
         }
     }
 
@@ -75,7 +107,15 @@ class PebbleWatchManager(private val context: Context) {
             IntentFilter(INTENT_APP_RECEIVE_NACK),
             ContextCompat.RECEIVER_EXPORTED
         )
+        ContextCompat.registerReceiver(
+            context,
+            dataReceiver,
+            IntentFilter(INTENT_APP_RECEIVE_DATA),
+            ContextCompat.RECEIVER_EXPORTED
+        )
     }
+
+    fun getWatchConfig(): WatchRenderConfig = watchConfig
 
     fun isPebbleConnected(): Boolean {
         val connected = PebbleKit.isWatchConnected(context)
@@ -101,7 +141,7 @@ class PebbleWatchManager(private val context: Context) {
         pendingFrame = null
         isRunning = false
         ackReceived = true
-        Log.d(TAG, "stopSending: cleared pending frames")
+        Log.d(TAG, "stopSending: cleared queue")
     }
 
     private fun scheduleSend() {
@@ -111,7 +151,7 @@ class PebbleWatchManager(private val context: Context) {
     private fun trySend() {
         val frame = pendingFrame
         if (frame == null) {
-            isRunning = ackReceived
+            isRunning = false
             return
         }
 
@@ -150,41 +190,84 @@ class PebbleWatchManager(private val context: Context) {
         val street = frame.streetName?.take(20) ?: ""
         dict.addString(KEY_STREET_NAME, street)
 
-        val simplifiedPoints = simplifyRoutePoints(frame.routePoints)
-        val packedPoints = packRoutePoints(simplifiedPoints)
-        val currentLocIndex = findNearestPointIndex(frame.currentLocation, simplifiedPoints)
+        dict.addInt32(KEY_BEARING, (frame.bearing * 100).toInt())
 
-        dict.addUint8(KEY_NUM_ROUTE_POINTS, simplifiedPoints.size.toByte())
+        val viewportMeters = max(frame.distanceToNextTurn * 1.8, 250.0).coerceAtMost(500.0)
+        val deltaLat = viewportMeters / 111320.0
+        val deltaLng = viewportMeters / (111320.0 * cos(Math.toRadians(frame.currentLocation.lat)))
+        val minLat = frame.currentLocation.lat - deltaLat
+        val maxLat = frame.currentLocation.lat + deltaLat
+        val minLng = frame.currentLocation.lng - deltaLng
+        val maxLng = frame.currentLocation.lng + deltaLng
+
+        val viewportPoints = buildViewportPoints(frame, minLat, maxLat, minLng, maxLng)
+        val packedPoints = packPointsToViewport(viewportPoints, minLat, maxLat, minLng, maxLng)
+
+        val dest = frame.routePoints.lastOrNull()
+        val destIndex = if (dest != null) {
+            viewportPoints.indexOfFirst {
+                latLngDistanceSq(it, dest) < 1e-16
+            }
+        } else -1
+        val visibleDestIndex = if (destIndex >= 0) destIndex else 255
+
+        dict.addUint8(KEY_NUM_ROUTE_POINTS, viewportPoints.size.toByte())
         dict.addBytes(KEY_ROUTE_POINTS, packedPoints)
-        dict.addUint8(KEY_CURRENT_LOC_INDEX, currentLocIndex.toByte())
+        dict.addUint8(KEY_CURRENT_LOC_INDEX, 0)
+        dict.addUint8(KEY_DESTINATION_INDEX, visibleDestIndex.toByte())
 
-        PebbleKit.sendDataToPebble(context, APP_UUID, dict)
-        Log.d(TAG, "sendWatchFrame: sent dictionary to Pebble")
+        val txId = nextTransactionId
+        nextTransactionId = (nextTransactionId + 1) and 0xFF
+        lastSentTransactionId = txId
+
+        PebbleKit.sendDataToPebbleWithTransactionId(context, APP_UUID, dict, txId)
+        Log.d(TAG, "sendWatchFrame: sent dictionary to Pebble tx=$txId points=${viewportPoints.size} destIdx=$visibleDestIndex")
     }
 
-    private fun simplifyRoutePoints(points: List<LatLng>): List<LatLng> {
-        if (points.size <= MAX_ROUTE_POINTS) return points
+    private fun buildViewportPoints(
+        frame: WatchFrame,
+        minLat: Double, maxLat: Double, minLng: Double, maxLng: Double
+    ): List<LatLng> {
+        if (frame.routePoints.isEmpty()) return listOf(frame.currentLocation)
 
-        val result = mutableListOf<LatLng>()
-        result.add(points.first())
-
-        val step = (points.size - 1).toFloat() / (MAX_ROUTE_POINTS - 1)
-        for (i in 1 until MAX_ROUTE_POINTS - 1) {
-            val idx = (i * step).toInt()
-            result.add(points[idx])
+        val visible = frame.routePoints.filter {
+            it.lat in minLat..maxLat && it.lng in minLng..maxLng
         }
 
-        result.add(points.last())
-        return result
+        // Drop points that are basically on top of the current location to avoid duplicate dots
+        val minDistSq = 1e-10 // ~1 metre
+        val deduped = visible.filter { latLngDistanceSq(it, frame.currentLocation) > minDistSq }
+
+        val result = mutableListOf(frame.currentLocation)
+        result.addAll(deduped)
+
+        if (result.size <= MAX_ROUTE_POINTS) return result
+
+        val dest = frame.routePoints.lastOrNull()
+        val destVisible = dest != null && visible.any { latLngDistanceSq(it, dest) < 1e-16 }
+
+        // We need to sample deduped down so that result.size == MAX_ROUTE_POINTS
+        val keepCount = MAX_ROUTE_POINTS - 1
+        val step = deduped.size.toFloat() / keepCount
+        val sampled = mutableListOf<LatLng>()
+        for (i in 0 until keepCount) {
+            val idx = (i * step).toInt().coerceIn(0, deduped.lastIndex)
+            sampled.add(deduped[idx])
+        }
+
+        // Ensure destination is in the sampled list if visible
+        if (destVisible && dest != null && !sampled.any { latLngDistanceSq(it, dest) < 1e-16 }) {
+            sampled[keepCount - 1] = dest
+        }
+
+        return mutableListOf(frame.currentLocation).apply { addAll(sampled) }
     }
 
-    private fun packRoutePoints(points: List<LatLng>): ByteArray {
+    private fun packPointsToViewport(
+        points: List<LatLng>,
+        minLat: Double, maxLat: Double, minLng: Double, maxLng: Double
+    ): ByteArray {
         if (points.isEmpty()) return byteArrayOf()
-
-        val minLat = points.minOf { it.lat }
-        val maxLat = points.maxOf { it.lat }
-        val minLng = points.minOf { it.lng }
-        val maxLng = points.maxOf { it.lng }
 
         val latRange = maxLat - minLat
         val lngRange = maxLng - minLng
@@ -207,21 +290,9 @@ class PebbleWatchManager(private val context: Context) {
         return bytes
     }
 
-    private fun findNearestPointIndex(location: LatLng, points: List<LatLng>): Int {
-        if (points.isEmpty()) return 0
-
-        var bestIndex = 0
-        var bestDist = Double.MAX_VALUE
-
-        for (i in points.indices) {
-            val dLat = points[i].lat - location.lat
-            val dLng = points[i].lng - location.lng
-            val dist = dLat * dLat + dLng * dLng
-            if (dist < bestDist) {
-                bestDist = dist
-                bestIndex = i
-            }
-        }
-        return bestIndex
+    private fun latLngDistanceSq(a: LatLng, b: LatLng): Double {
+        val dLat = a.lat - b.lat
+        val dLng = a.lng - b.lng
+        return dLat * dLat + dLng * dLng
     }
 }
