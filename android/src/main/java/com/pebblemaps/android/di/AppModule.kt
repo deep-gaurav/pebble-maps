@@ -37,5 +37,5 @@ val appModule = module {
     viewModel { MapViewModel(get()) }
     single { NavigationViewModel(get()) }
     viewModel { WatchPreviewViewModel() }
-    factory { PebbleWatchManager(get()) }
+    single { PebbleWatchManager(get()) }
 }

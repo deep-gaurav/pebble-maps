@@ -2,10 +2,12 @@ package com.pebblemaps.android.data.pebble
 
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
 import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.getpebble.android.kit.PebbleKit
 import com.getpebble.android.kit.util.PebbleDictionary
 import com.pebblemaps.android.domain.model.LatLng
@@ -28,6 +30,11 @@ class PebbleWatchManager(private val context: Context) {
 
         const val MAX_ROUTE_POINTS = 20
         private const val MIN_SEND_INTERVAL_MS = 500L
+
+        private const val INTENT_APP_RECEIVE_ACK = "com.getpebble.action.app.RECEIVE_ACK"
+        private const val INTENT_APP_RECEIVE_NACK = "com.getpebble.action.app.RECEIVE_NACK"
+        private const val APP_UUID_KEY = "uuid"
+        private const val TRANSACTION_ID_KEY = "transaction_id"
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -37,25 +44,41 @@ class PebbleWatchManager(private val context: Context) {
     private var ackReceived = true
     private var isRunning = false
 
-    private val ackReceiver: BroadcastReceiver = object : PebbleKit.PebbleAckReceiver(APP_UUID) {
-        override fun receiveAck(context: Context, transactionId: Int) {
-            Log.d(TAG, "ACK received tx=$transactionId")
+    private val ackReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val uuid = intent.getSerializableExtra(APP_UUID_KEY) as? UUID
+            if (uuid != APP_UUID) return
+            val tx = intent.getIntExtra(TRANSACTION_ID_KEY, -1)
+            Log.d(TAG, "ACK received tx=$tx")
             ackReceived = true
             scheduleSend()
         }
     }
 
-    private val nackReceiver: BroadcastReceiver = object : PebbleKit.PebbleNackReceiver(APP_UUID) {
-        override fun receiveNack(context: Context, transactionId: Int) {
-            Log.w(TAG, "NACK received tx=$transactionId")
+    private val nackReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val uuid = intent.getSerializableExtra(APP_UUID_KEY) as? UUID
+            if (uuid != APP_UUID) return
+            val tx = intent.getIntExtra(TRANSACTION_ID_KEY, -1)
+            Log.w(TAG, "NACK received tx=$tx")
             ackReceived = true
             scheduleSend()
         }
     }
 
     init {
-        PebbleKit.registerReceivedAckHandler(context, ackReceiver as PebbleKit.PebbleAckReceiver)
-        PebbleKit.registerReceivedNackHandler(context, nackReceiver as PebbleKit.PebbleNackReceiver)
+        ContextCompat.registerReceiver(
+            context,
+            ackReceiver,
+            IntentFilter(INTENT_APP_RECEIVE_ACK),
+            ContextCompat.RECEIVER_EXPORTED
+        )
+        ContextCompat.registerReceiver(
+            context,
+            nackReceiver,
+            IntentFilter(INTENT_APP_RECEIVE_NACK),
+            ContextCompat.RECEIVER_EXPORTED
+        )
     }
 
     fun isPebbleConnected(): Boolean {
