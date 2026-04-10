@@ -49,14 +49,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.util.Log
+import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.domain.model.MockLocationManager
 import com.pebblemaps.android.domain.model.Route
 import com.pebblemaps.android.domain.model.Step
 import com.pebblemaps.android.domain.model.TurnDirection
+import com.pebblemaps.android.domain.model.WatchFrame
 import com.pebblemaps.android.domain.model.toArrow
 import com.pebblemaps.android.domain.model.toDescription
 import com.pebblemaps.android.domain.model.toTurnDirection
 import org.koin.androidx.compose.koinViewModel
+import org.koin.androidx.compose.get
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -71,6 +75,7 @@ fun ActiveNavigationScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val mockState by MockLocationManager.stateFlow.collectAsState()
+    val pebbleManager: PebbleWatchManager = get()
     
     var showDebug by remember { mutableStateOf(false) }
     var speedSlider by remember { mutableFloatStateOf(MockLocationManager.speedKmh.toFloat()) }
@@ -80,6 +85,30 @@ fun ActiveNavigationScreen(
         state.route?.let { route ->
             MockLocationManager.setRoute(route)
             MockLocationManager.start()
+            if (pebbleManager.isPebbleConnected()) {
+                pebbleManager.launchWatchApp()
+            }
+        }
+    }
+    
+    LaunchedEffect(mockState) {
+        mockState?.let { mock ->
+            val route = state.route
+            val turnDirection = getCurrentTurnDirection(route, mock.currentStepIndex)
+            val streetName = route?.legs
+                ?.flatMap { it.steps }
+                ?.getOrNull(mock.currentStepIndex)
+                ?.maneuver
+                ?.type
+            val frame = WatchFrame(
+                routePoints = route?.geometry?.coordinates ?: emptyList(),
+                currentLocation = mock.currentPosition,
+                turnDirection = turnDirection,
+                distanceToNextTurn = mock.distanceToNextTurn,
+                distanceRemaining = mock.totalRemainingDistance,
+                streetName = streetName
+            )
+            pebbleManager.sendWatchFrame(frame)
         }
     }
     

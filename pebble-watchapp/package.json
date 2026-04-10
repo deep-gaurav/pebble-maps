@@ -1,0 +1,30 @@
+{
+  "name": "pebble-maps-nav",
+  "author": "PebbleMaps",
+  "version": "1.0.0",
+  "keywords": ["pebble", "maps", "navigation"],
+  "private": true,
+  "pebble": {
+    "displayName": "Pebble Maps Nav",
+    "uuid": "7ead5e7d-a91c-4875-a314-d7685b456df7",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": ["basalt", "diorite", "emery"],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": {
+      "TURN_DIRECTION": 0,
+      "DISTANCE_TO_TURN": 1,
+      "DISTANCE_REMAINING": 2,
+      "STREET_NAME": 3,
+      "NUM_ROUTE_POINTS": 4,
+      "ROUTE_POINTS": 5,
+      "CURRENT_LOC_INDEX": 6
+    },
+    "resources": {
+      "media": []
+    },
+    "capabilities": ["configurable"]
+  }
+}

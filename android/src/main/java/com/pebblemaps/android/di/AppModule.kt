@@ -3,6 +3,7 @@ package com.pebblemaps.android.di
 import com.pebblemaps.android.data.remote.OsrmApi
 import com.pebblemaps.android.data.repository.RouteRepository
 import com.pebblemaps.android.data.repository.RouteRepositoryImpl
+import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.ui.map.MapViewModel
 import com.pebblemaps.android.ui.navigation.NavigationViewModel
 import com.pebblemaps.android.ui.preview.WatchPreviewViewModel
@@ -36,4 +37,5 @@ val appModule = module {
     viewModel { MapViewModel(get()) }
     single { NavigationViewModel(get()) }
     viewModel { WatchPreviewViewModel() }
+    factory { PebbleWatchManager(get()) }
 }

@@ -39,11 +39,13 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.TurnDirection
 import com.pebblemaps.android.domain.model.WatchFrame
 import com.pebblemaps.android.domain.model.WatchRenderConfig
 import org.koin.androidx.compose.koinViewModel
+import org.koin.androidx.compose.get
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -94,6 +96,13 @@ fun WatchPreviewScreen(
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleLarge
             )
+            val pebbleManager: PebbleWatchManager = get()
+            TextButton(onClick = {
+                pebbleManager.launchWatchApp()
+                pebbleManager.sendWatchFrame(frame ?: defaultFrame)
+            }) {
+                Text("Launch on Pebble")
+            }
             TextButton(onClick = {
                 val w = widthInput.toIntOrNull() ?: 176
                 val h = heightInput.toIntOrNull() ?: 176
