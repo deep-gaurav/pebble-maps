@@ -115,8 +115,8 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
   // Draw route polyline
   if (s_num_points >= 2) {
-    graphics_context_set_stroke_color(ctx, GColorYellow);
-    graphics_context_set_stroke_width(ctx, 2);
+    graphics_context_set_stroke_color(ctx, GColorWhite);
+    graphics_context_set_stroke_width(ctx, 3);
     for (int i = 0; i < s_num_points - 1; i++) {
       graphics_draw_line(ctx, rotated[i], rotated[i + 1]);
     }
@@ -137,7 +137,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Turn arrow
   const char *arrow = get_turn_arrow(s_turn_direction);
   if (arrow[0] != '\0') {
-    graphics_context_set_text_color(ctx, GColorYellow);
+    graphics_context_set_text_color(ctx, GColorWhite);
     graphics_draw_text(ctx, arrow, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
                        GRect(0, bounds.size.h * 0.05, bounds.size.w, 40),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
