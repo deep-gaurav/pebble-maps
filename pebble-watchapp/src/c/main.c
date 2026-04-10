@@ -115,8 +115,8 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
   // Draw route polyline
   if (s_num_points >= 2) {
-    graphics_context_set_stroke_color(ctx, GColorWhite);
-    graphics_context_set_stroke_width(ctx, 3);
+    graphics_context_set_stroke_color(ctx, GColorVividCerulean);
+    graphics_context_set_stroke_width(ctx, 5);
     for (int i = 0; i < s_num_points - 1; i++) {
       graphics_draw_line(ctx, rotated[i], rotated[i + 1]);
     }
@@ -137,7 +137,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Turn arrow
   const char *arrow = get_turn_arrow(s_turn_direction);
   if (arrow[0] != '\0') {
-    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_context_set_text_color(ctx, GColorBlack);
     graphics_draw_text(ctx, arrow, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
                        GRect(0, bounds.size.h * 0.05, bounds.size.w, 40),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
@@ -146,13 +146,14 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Distance to turn
   char dist_buf[16];
   format_distance(s_distance_to_turn, dist_buf, sizeof(dist_buf));
-  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_context_set_text_color(ctx, GColorBlack);
   graphics_draw_text(ctx, dist_buf, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                      GRect(0, bounds.size.h * 0.25, bounds.size.w, 30),
                      GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
 
   // Street name
   if (s_street_name[0] != '\0') {
+    graphics_context_set_text_color(ctx, GColorBlack);
     graphics_draw_text(ctx, s_street_name, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                        GRect(0, bounds.size.h * 0.72, bounds.size.w, 30),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
@@ -161,6 +162,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   // Remaining distance
   char remaining_buf[16];
   format_distance(s_distance_remaining, remaining_buf, sizeof(remaining_buf));
+  graphics_context_set_text_color(ctx, GColorBlack);
   graphics_draw_text(ctx, remaining_buf, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(0, bounds.size.h * 0.85, bounds.size.w, 30),
                      GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
@@ -190,7 +192,7 @@ static void window_load(Window *window) {
   s_screen_w = bounds.size.w;
   s_screen_h = bounds.size.h;
 
-  window_set_background_color(window, GColorBlack);
+  window_set_background_color(window, GColorWhite);
 
   s_canvas_layer = layer_create(bounds);
   layer_set_update_proc(s_canvas_layer, canvas_update_proc);

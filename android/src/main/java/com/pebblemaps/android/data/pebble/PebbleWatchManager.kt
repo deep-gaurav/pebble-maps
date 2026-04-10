@@ -192,7 +192,7 @@ class PebbleWatchManager(private val context: Context) {
 
         dict.addInt32(KEY_BEARING, (frame.bearing * 100).toInt())
 
-        val viewportMeters = max(frame.distanceToNextTurn * 1.8, 250.0).coerceAtMost(500.0)
+        val viewportMeters = 150.0
         val deltaLat = viewportMeters / 111320.0
         val deltaLng = viewportMeters / (111320.0 * cos(Math.toRadians(frame.currentLocation.lat)))
         val minLat = frame.currentLocation.lat - deltaLat
@@ -230,34 +230,53 @@ class PebbleWatchManager(private val context: Context) {
     ): List<LatLng> {
         if (frame.routePoints.isEmpty()) return listOf(frame.currentLocation)
 
-        val visible = frame.routePoints.filter {
+        // 1. Stable base sample across the whole route
+        val baseSample = if (frame.routePoints.size <= MAX_ROUTE_POINTS) {
+            frame.routePoints
+        } else {
+            val step = frame.routePoints.size.toFloat() / MAX_ROUTE_POINTS
+            (0 until MAX_ROUTE_POINTS).map { i ->
+                frame.routePoints[(i * step).toInt().coerceIn(0, frame.routePoints.lastIndex)]
+            }
+        }
+
+        // 2. Keep only base points inside the viewport
+        val visible = baseSample.filter {
             it.lat in minLat..maxLat && it.lng in minLng..maxLng
         }
 
-        // Drop points that are basically on top of the current location to avoid duplicate dots
-        val minDistSq = 1e-10 // ~1 metre
+        // 3. Drop points on top of current location to avoid duplicate dots
+        val minDistSq = 1e-10
         val deduped = visible.filter { latLngDistanceSq(it, frame.currentLocation) > minDistSq }
 
         val result = mutableListOf(frame.currentLocation)
         result.addAll(deduped)
 
-        if (result.size <= MAX_ROUTE_POINTS) return result
-
         val dest = frame.routePoints.lastOrNull()
-        val destVisible = dest != null && visible.any { latLngDistanceSq(it, dest) < 1e-16 }
+        val destVisible = dest != null && dest.lat in minLat..maxLat && dest.lng in minLng..maxLng
 
-        // We need to sample deduped down so that result.size == MAX_ROUTE_POINTS
-        val keepCount = MAX_ROUTE_POINTS - 1
-        val step = deduped.size.toFloat() / keepCount
-        val sampled = mutableListOf<LatLng>()
-        for (i in 0 until keepCount) {
-            val idx = (i * step).toInt().coerceIn(0, deduped.lastIndex)
-            sampled.add(deduped[idx])
+        if (result.size <= MAX_ROUTE_POINTS) {
+            if (destVisible) {
+                val d = dest!!
+                if (!result.any { latLngDistanceSq(it, d) < 1e-16 }) {
+                    result.add(d)
+                }
+            }
+            return result
         }
 
-        // Ensure destination is in the sampled list if visible
-        if (destVisible && dest != null && !sampled.any { latLngDistanceSq(it, dest) < 1e-16 }) {
-            sampled[keepCount - 1] = dest
+        // 4. Sample visible points down evenly, preserving destination if visible
+        val keepCount = MAX_ROUTE_POINTS - 1
+        val step = deduped.size.toFloat() / keepCount
+        val sampled = (0 until keepCount).map { i ->
+            deduped[(i * step).toInt().coerceIn(0, deduped.lastIndex)]
+        }.toMutableList()
+
+        if (destVisible) {
+            val d = dest!!
+            if (!sampled.any { latLngDistanceSq(it, d) < 1e-16 }) {
+                sampled[keepCount - 1] = d
+            }
         }
 
         return mutableListOf(frame.currentLocation).apply { addAll(sampled) }
