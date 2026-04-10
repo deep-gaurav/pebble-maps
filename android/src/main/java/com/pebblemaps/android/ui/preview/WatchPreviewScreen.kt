@@ -99,7 +99,7 @@ fun WatchPreviewScreen(
             val pebbleManager: PebbleWatchManager = get()
             TextButton(onClick = {
                 pebbleManager.launchWatchApp()
-                pebbleManager.sendWatchFrame(frame ?: defaultFrame)
+                pebbleManager.postWatchFrame(frame ?: defaultFrame)
             }) {
                 Text("Launch on Pebble")
             }

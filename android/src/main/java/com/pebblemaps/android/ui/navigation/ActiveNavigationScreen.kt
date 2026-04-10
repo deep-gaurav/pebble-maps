@@ -108,13 +108,14 @@ fun ActiveNavigationScreen(
                 distanceRemaining = mock.totalRemainingDistance,
                 streetName = streetName
             )
-            pebbleManager.sendWatchFrame(frame)
+            pebbleManager.postWatchFrame(frame)
         }
     }
     
     DisposableEffect(Unit) {
         onDispose {
             MockLocationManager.stop()
+            pebbleManager.stopSending()
         }
     }
     

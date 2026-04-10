@@ -1,13 +1,16 @@
 package com.pebblemaps.android.data.pebble
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.getpebble.android.kit.PebbleKit
 import com.getpebble.android.kit.util.PebbleDictionary
 import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.WatchFrame
 import java.util.UUID
-import kotlin.math.sqrt
 
 class PebbleWatchManager(private val context: Context) {
 
@@ -24,6 +27,35 @@ class PebbleWatchManager(private val context: Context) {
         const val KEY_CURRENT_LOC_INDEX = 6
 
         const val MAX_ROUTE_POINTS = 20
+        private const val MIN_SEND_INTERVAL_MS = 500L
+    }
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var pendingFrame: WatchFrame? = null
+    private var lastSendTime = 0L
+    @Volatile
+    private var ackReceived = true
+    private var isRunning = false
+
+    private val ackReceiver: BroadcastReceiver = object : PebbleKit.PebbleAckReceiver(APP_UUID) {
+        override fun receiveAck(context: Context, transactionId: Int) {
+            Log.d(TAG, "ACK received tx=$transactionId")
+            ackReceived = true
+            scheduleSend()
+        }
+    }
+
+    private val nackReceiver: BroadcastReceiver = object : PebbleKit.PebbleNackReceiver(APP_UUID) {
+        override fun receiveNack(context: Context, transactionId: Int) {
+            Log.w(TAG, "NACK received tx=$transactionId")
+            ackReceived = true
+            scheduleSend()
+        }
+    }
+
+    init {
+        PebbleKit.registerReceivedAckHandler(context, ackReceiver as PebbleKit.PebbleAckReceiver)
+        PebbleKit.registerReceivedNackHandler(context, nackReceiver as PebbleKit.PebbleNackReceiver)
     }
 
     fun isPebbleConnected(): Boolean {
@@ -37,12 +69,57 @@ class PebbleWatchManager(private val context: Context) {
         PebbleKit.startAppOnPebble(context, APP_UUID)
     }
 
-    fun sendWatchFrame(frame: WatchFrame) {
-        val connected = isPebbleConnected()
-        if (!connected) {
-            Log.w(TAG, "sendWatchFrame: provider says not connected, but sending broadcast anyway")
+    fun postWatchFrame(frame: WatchFrame) {
+        pendingFrame = frame
+        if (!isRunning) {
+            isRunning = true
+            scheduleSend()
+        }
+    }
+
+    fun stopSending() {
+        handler.removeCallbacksAndMessages(null)
+        pendingFrame = null
+        isRunning = false
+        ackReceived = true
+        Log.d(TAG, "stopSending: cleared pending frames")
+    }
+
+    private fun scheduleSend() {
+        handler.post { trySend() }
+    }
+
+    private fun trySend() {
+        val frame = pendingFrame
+        if (frame == null) {
+            isRunning = ackReceived
+            return
         }
 
+        if (!ackReceived) {
+            handler.postDelayed({ trySend() }, 100)
+            return
+        }
+
+        val elapsed = System.currentTimeMillis() - lastSendTime
+        if (elapsed < MIN_SEND_INTERVAL_MS) {
+            handler.postDelayed({ trySend() }, MIN_SEND_INTERVAL_MS - elapsed)
+            return
+        }
+
+        pendingFrame = null
+        lastSendTime = System.currentTimeMillis()
+        ackReceived = false
+        sendFrameInternal(frame)
+
+        if (pendingFrame != null) {
+            handler.postDelayed({ trySend() }, MIN_SEND_INTERVAL_MS)
+        } else {
+            isRunning = false
+        }
+    }
+
+    private fun sendFrameInternal(frame: WatchFrame) {
         Log.d(TAG, "sendWatchFrame: turn=${frame.turnDirection}, dist=${frame.distanceToNextTurn}, remaining=${frame.distanceRemaining}, street=${frame.streetName}, points=${frame.routePoints.size}")
 
         val dict = PebbleDictionary()
