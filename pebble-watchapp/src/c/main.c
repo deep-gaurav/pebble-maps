@@ -27,7 +27,7 @@ static char s_street_name[21] = "";
 static GPoint rotate_point(GPoint p, GPoint center, int32_t angle_hundredths) {
   if (angle_hundredths == 0) return p;
 
-  int32_t angle = (-angle_hundredths * TRIG_MAX_ANGLE) / 36000;
+  int32_t angle = (angle_hundredths * TRIG_MAX_ANGLE) / 36000;
   int32_t c = cos_lookup(angle);
   int32_t s = sin_lookup(angle);
 
@@ -103,12 +103,12 @@ static void draw_turn_arrow_shape(GContext *ctx, GPoint center, uint8_t dir) {
 
   int32_t angle = 0;
   switch (dir) {
-    case 2: angle = -4500; break;
-    case 3: angle = -9000; break;
-    case 4: angle = -13500; break;
-    case 5: angle = 4500; break;
-    case 6: angle = 9000; break;
-    case 7: angle = 13500; break;
+    case 2: angle = 4500; break;
+    case 3: angle = 9000; break;
+    case 4: angle = 13500; break;
+    case 5: angle = -4500; break;
+    case 6: angle = -9000; break;
+    case 7: angle = -13500; break;
     case 8: angle = 18000; break;
     default: angle = 0; break;
   }
@@ -132,11 +132,19 @@ static void draw_turn_arrow_shape(GContext *ctx, GPoint center, uint8_t dir) {
 }
 
 static void format_distance(int32_t meters, char *buf, size_t size) {
+  if (meters <= 0) {
+    snprintf(buf, size, "--m");
+    return;
+  }
   if (meters < 1000) {
     snprintf(buf, size, "%dm", (int)meters);
   } else {
-    float km = meters / 1000.0f;
-    snprintf(buf, size, "%.1fkm", km);
+    double km = meters / 1000.0;
+    if (km < 10.0) {
+      snprintf(buf, size, "%.1fkm", km);
+    } else {
+      snprintf(buf, size, "%.0fkm", km);
+    }
   }
 }
 
@@ -174,7 +182,7 @@ static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_c
     .rotation = 0,
     .offset = GPointZero,
   };
-  graphics_context_set_fill_color(ctx, GColorDarkGray);
+  graphics_context_set_fill_color(ctx, GColorCyan);
   gpath_draw_filled(ctx, &path);
 }
 
@@ -214,7 +222,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   }
 
   if (s_num_points >= 2) {
-    graphics_context_set_stroke_color(ctx, GColorVividCerulean);
+    graphics_context_set_stroke_color(ctx, GColorBlack);
     graphics_context_set_stroke_width(ctx, 3);
     for (int i = 0; i < s_num_points - 1; i++) {
       graphics_draw_line(ctx, s_points[i], s_points[i + 1]);
@@ -229,13 +237,24 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   graphics_context_set_fill_color(ctx, GColorGreen);
   graphics_fill_circle(ctx, screen_center, 5);
 
-  draw_turn_arrow_shape(ctx, GPoint(bounds.size.w / 2, bounds.size.h - 38), s_turn_direction);
+  int indicator_x = 8;
+  int indicator_y = bounds.size.h - 55;
+  int indicator_size = 36;
+  
+  GRect bg_rect = GRect(indicator_x - 4, indicator_y - 4, indicator_size + 8, indicator_size + 28);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bg_rect, 4, GCornersAll);
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  graphics_context_set_stroke_width(ctx, 1);
+  graphics_draw_rect(ctx, bg_rect);
+
+  draw_turn_arrow_shape(ctx, GPoint(indicator_x + indicator_size / 2, indicator_y + indicator_size / 2 - 2), s_turn_direction);
 
   char dist_buf[16];
   format_distance(s_distance_to_turn, dist_buf, sizeof(dist_buf));
   graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, dist_buf, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(0, bounds.size.h - 18, bounds.size.w, 18),
+  graphics_draw_text(ctx, dist_buf, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(indicator_x - 4, indicator_y + indicator_size + 2, indicator_size + 8, 18),
                      GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
 }
 

@@ -25,8 +25,10 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -97,19 +99,8 @@ fun ActiveNavigationScreen(
     LaunchedEffect(Unit) {
         state.route?.let { route ->
             val coordinates = route.geometry.coordinates
-            if (coordinates.isNotEmpty()) {
-                val startPos = coordinates.first()
-                val aheadIdx = minOf(10, coordinates.size - 1)
-                val aheadPos = coordinates[aheadIdx]
-                val bearing = calculateBearing(startPos, aheadPos)
-                
-                try {
-                    roadCache.refreshIfNeededAndWait(startPos, bearing, 150.0)
-                    Log.d("NavScreen", "Road pre-cache complete, starting navigation")
-                } catch (e: Exception) {
-                    Log.e("NavScreen", "Road pre-cache failed: ${e.message}")
-                }
-            }
+            
+            roadCache.prefetchEntireRoute(coordinates, 150.0)
             
             MockLocationManager.setRoute(route)
             MockLocationManager.start()
@@ -239,6 +230,43 @@ fun ActiveNavigationScreen(
                 contentDescription = "Back",
                 tint = ComposeColor.White
             )
+        }
+        
+        // Loading overlay while pre-fetching route
+        val isPrefetching by roadCache.isPrefetching.collectAsState()
+        val prefetchProgress by roadCache.prefetchProgress.collectAsState()
+        
+        if (isPrefetching) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(ComposeColor.Black.copy(alpha = 0.6f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator(
+                        color = ComposeColor.White,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Text(
+                        text = "Loading roads... ${(prefetchProgress * 100).toInt()}%",
+                        color = ComposeColor.White,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(top = 16.dp)
+                    )
+                    LinearProgressIndicator(
+                        progress = { prefetchProgress },
+                        color = ComposeColor.Cyan,
+                        trackColor = ComposeColor.White.copy(alpha = 0.3f),
+                        modifier = Modifier
+                            .fillMaxWidth(0.6f)
+                            .padding(top = 8.dp)
+                    )
+                }
+            }
         }
         
         // Bottom Panel

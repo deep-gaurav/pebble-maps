@@ -8,6 +8,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.cos
@@ -28,6 +31,12 @@ class RoadCache(private val overpassApi: OverpassApi) {
 
     private val cellCache = linkedMapOf<CellKey, CachedCell>()
     private val refreshingCells = mutableSetOf<CellKey>()
+    
+    private val _prefetchProgress = MutableStateFlow(0f)
+    val prefetchProgress: StateFlow<Float> = _prefetchProgress.asStateFlow()
+    
+    private val _isPrefetching = MutableStateFlow(false)
+    val isPrefetching: StateFlow<Boolean> = _isPrefetching.asStateFlow()
 
     fun getRoads(location: LatLng, bearing: Float, viewportMeters: Double): List<RoadSegment> {
         val keys = desiredCells(location, bearing, viewportMeters)
@@ -99,6 +108,67 @@ class RoadCache(private val overpassApi: OverpassApi) {
             jobs.forEach { it.join() }
             Log.d(TAG, "All pre-cache fetches complete")
         }
+    }
+
+    suspend fun prefetchEntireRoute(coordinates: List<LatLng>, viewportMeters: Double) {
+        _isPrefetching.value = true
+        _prefetchProgress.value = 0f
+        
+        if (coordinates.isEmpty()) {
+            _isPrefetching.value = false
+            return
+        }
+        
+        val allKeys = mutableSetOf<CellKey>()
+        val step = maxOf(1, coordinates.size / 20)
+        for (i in coordinates.indices step step) {
+            val location = coordinates[i]
+            allKeys.addAll(desiredCells(location, 0f, viewportMeters))
+        }
+        
+        val keysList = allKeys.toList()
+        if (keysList.isEmpty()) {
+            _isPrefetching.value = false
+            return
+        }
+        
+        var completed = 0
+        val jobs = mutableListOf<Job>()
+        val now = System.currentTimeMillis()
+        
+        keysList.forEach { key ->
+            val cached = cellCache[key]
+            if (cached != null && now - cached.fetchedAtMs < CELL_TTL_MS) {
+                completed++
+                _prefetchProgress.value = completed.toFloat() / keysList.size
+                return@forEach
+            }
+            if (!refreshingCells.add(key)) {
+                completed++
+                _prefetchProgress.value = completed.toFloat() / keysList.size
+                return@forEach
+            }
+            
+            jobs.add(scope.launch {
+                try {
+                    val center = cellCenter(key, coordinates.first().lat)
+                    val roads = withContext(Dispatchers.IO) {
+                        overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
+                    }
+                    cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    Log.d(TAG, "Route pre-fetch: ${roads.size} roads for cell=$key")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Route pre-fetch failed for $key: ${e.message}")
+                } finally {
+                    refreshingCells.remove(key)
+                    _prefetchProgress.value = (++completed).toFloat() / keysList.size
+                }
+            })
+        }
+        
+        jobs.forEach { it.join() }
+        _isPrefetching.value = false
+        Log.d(TAG, "Route pre-fetch complete: ${keysList.size} cells")
     }
 
     private fun trimCache(keysToKeep: Set<CellKey>) {
