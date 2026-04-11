@@ -124,6 +124,7 @@ class PebbleWatchManager(private val context: Context) {
 
     fun postFrame(frame: WatchFrame) {
         pendingFrame = frame
+        Log.d(TAG, "postFrame: isWaitingAck=$isWaitingAck, isWatchReady=$isWatchReady")
         if (!isWaitingAck) {
             startNextFrameIfPossible()
         }
@@ -137,10 +138,17 @@ class PebbleWatchManager(private val context: Context) {
     }
 
     private fun startNextFrameIfPossible() {
-        if (isWaitingAck) return
-        if (!isWatchReady) return
+        if (isWaitingAck) {
+            Log.d(TAG, "startNextFrameIfPossible: blocked by isWaitingAck=true")
+            return
+        }
+        if (!isWatchReady) {
+            Log.d(TAG, "startNextFrameIfPossible: blocked by isWatchReady=false")
+            return
+        }
         val frame = pendingFrame ?: return
         pendingFrame = null
+        Log.d(TAG, "startNextFrameIfPossible: sending frame")
         sendFrame(frame, WatchGeometryPreparer.prepare(frame))
     }
 

@@ -135,42 +135,21 @@ class RoadCache(private val overpassApi: OverpassApi) {
             return
         }
         
-        val now = System.currentTimeMillis()
-        var cachedCount = 0
-        var refreshingCount = 0
-        
-        keysList.forEach { key ->
-            if (cellCache[key] != null) {
-                cachedCount++
-                return@forEach
-            }
-            if (!refreshingCells.add(key)) {
-                refreshingCount++
-                return@forEach
-            }
-        }
-        
-        if (cachedCount == keysList.size) {
-            Log.d(TAG, "Prefetch skipped: all ${keysList.size} cells already cached")
-            return
-        }
-        
-        Log.d(TAG, "Prefetch starting: ${keysList.size} cells, $cachedCount cached, $refreshingCount refreshing")
-        
+        Log.d(TAG, "Prefetch starting: ${keysList.size} cells")
         _isPrefetching.value = true
         _prefetchProgress.value = 0f
         
-        val completed = AtomicInteger(cachedCount + refreshingCount)
-        val totalKeys = keysList.size
+        val now = System.currentTimeMillis()
+        val completed = AtomicInteger(0)
         val jobs = mutableListOf<Job>()
         
         keysList.forEach { key ->
             if (cellCache[key] != null) {
-                _prefetchProgress.value = completed.incrementAndGet().toFloat() / totalKeys
+                completed.incrementAndGet()
                 return@forEach
             }
             if (!refreshingCells.add(key)) {
-                _prefetchProgress.value = completed.incrementAndGet().toFloat() / totalKeys
+                completed.incrementAndGet()
                 return@forEach
             }
             
@@ -187,7 +166,7 @@ class RoadCache(private val overpassApi: OverpassApi) {
                     Log.e(TAG, "Route pre-fetch failed for $key: ${e.message}")
                 } finally {
                     refreshingCells.remove(key)
-                    _prefetchProgress.value = completed.incrementAndGet().toFloat() / totalKeys
+                    completed.incrementAndGet()
                 }
             })
         }
