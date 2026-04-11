@@ -1,6 +1,8 @@
 package com.pebblemaps.android.util
 
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.domain.model.RoadClass
+import com.pebblemaps.android.domain.model.RoadSegment
 import com.pebblemaps.android.domain.model.TurnDirection
 import com.pebblemaps.android.domain.model.WatchFrame
 import org.junit.Assert.assertFalse
@@ -49,15 +51,15 @@ class WatchGeometryPreparerTest {
         val frame = baseFrame(
             routePoints = listOf(offsetMeters(-20.0, 0.0), offsetMeters(70.0, 0.0)),
             nearbyRoads = listOf(
-                listOf(offsetMeters(-160.0, 25.0), offsetMeters(160.0, 25.0)),
-                listOf(offsetMeters(-140.0, -30.0), offsetMeters(140.0, -30.0))
+                roadSegment(RoadClass.STANDARD, offsetMeters(-160.0, 25.0), offsetMeters(160.0, 25.0)),
+                roadSegment(RoadClass.MINOR, offsetMeters(-140.0, -30.0), offsetMeters(140.0, -30.0))
             )
         )
 
         val prepared = WatchGeometryPreparer.prepare(frame)
 
         assertFalse(prepared.roadSegments.isEmpty())
-        assertTrue(prepared.roadSegments.flatten().all {
+        assertTrue(prepared.roadSegments.flatMap { it.points }.all {
             abs(it.xMeters) <= frame.viewportMeters / 2.0 * 1.12 + 0.5 &&
                 abs(it.yMeters) <= frame.viewportMeters / 2.0 * 1.12 + 0.5
         })
@@ -69,11 +71,11 @@ class WatchGeometryPreparerTest {
         val frame = baseFrame(
             routePoints = listOf(offsetMeters(-20.0, 0.0), offsetMeters(90.0, 0.0)),
             nearbyRoads = buildList {
-                add(listOf(offsetMeters(-100.0, 8.0), offsetMeters(120.0, 8.0)))
-                add(listOf(offsetMeters(-100.0, -10.0), offsetMeters(120.0, -10.0)))
+                add(roadSegment(RoadClass.MEDIUM, offsetMeters(-100.0, 8.0), offsetMeters(120.0, 8.0)))
+                add(roadSegment(RoadClass.STANDARD, offsetMeters(-100.0, -10.0), offsetMeters(120.0, -10.0)))
                 repeat(6) { idx ->
                     val north = 45.0 + idx * 7.0
-                    add(listOf(offsetMeters(-90.0, north), offsetMeters(110.0, north)))
+                    add(roadSegment(RoadClass.MINOR, offsetMeters(-90.0, north), offsetMeters(110.0, north)))
                 }
             }
         )
@@ -81,14 +83,15 @@ class WatchGeometryPreparerTest {
         val prepared = WatchGeometryPreparer.prepare(frame)
 
         assertFalse(prepared.roadSegments.isEmpty())
-        val firstSegmentAverageY = prepared.roadSegments.first().map { it.yMeters }.average()
+        val firstSegmentAverageY = prepared.roadSegments.first().points.map { it.yMeters }.average()
         assertTrue(abs(firstSegmentAverageY) < 20.0)
         assertNotEquals(0, prepared.estimatedRoadBytes)
+        assertTrue(prepared.roadSegments.first().roadClass != RoadClass.MINOR)
     }
 
     private fun baseFrame(
         routePoints: List<LatLng>,
-        nearbyRoads: List<List<LatLng>> = emptyList()
+        nearbyRoads: List<RoadSegment> = emptyList()
     ): WatchFrame {
         return WatchFrame(
             routePoints = routePoints,
@@ -101,6 +104,10 @@ class WatchGeometryPreparerTest {
             viewportMeters = 140.0,
             nearbyRoads = nearbyRoads
         )
+    }
+
+    private fun roadSegment(roadClass: RoadClass, vararg points: LatLng): RoadSegment {
+        return RoadSegment(points = points.toList(), roadClass = roadClass)
     }
 
     private fun offsetMeters(eastMeters: Double, northMeters: Double): LatLng {

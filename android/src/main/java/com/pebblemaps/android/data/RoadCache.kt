@@ -3,8 +3,10 @@ package com.pebblemaps.android.data
 import android.util.Log
 import com.pebblemaps.android.data.remote.OverpassApi
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.domain.model.RoadSegment
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -27,7 +29,7 @@ class RoadCache(private val overpassApi: OverpassApi) {
     private val cellCache = linkedMapOf<CellKey, CachedCell>()
     private val refreshingCells = mutableSetOf<CellKey>()
 
-    fun getRoads(location: LatLng, bearing: Float, viewportMeters: Double): List<List<LatLng>> {
+    fun getRoads(location: LatLng, bearing: Float, viewportMeters: Double): List<RoadSegment> {
         val keys = desiredCells(location, bearing, viewportMeters)
         return keys
             .asSequence()
@@ -59,6 +61,43 @@ class RoadCache(private val overpassApi: OverpassApi) {
                     refreshingCells.remove(key)
                 }
             }
+        }
+    }
+
+    suspend fun refreshIfNeededAndWait(location: LatLng, bearing: Float, viewportMeters: Double) {
+        val now = System.currentTimeMillis()
+        val keys = desiredCells(location, bearing, viewportMeters)
+        
+        val jobs = mutableListOf<Job>()
+        
+        keys.forEach { key ->
+            val cached = cellCache[key]
+            if (cached != null && now - cached.fetchedAtMs < CELL_TTL_MS) return@forEach
+            if (!refreshingCells.add(key)) return@forEach
+            
+            val job = scope.launch {
+                try {
+                    val center = cellCenter(key, location.lat)
+                    val roads = withContext(Dispatchers.IO) {
+                        overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
+                    }
+                    cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    Log.d(TAG, "Pre-cached ${roads.size} roads for cell=$key")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to pre-cache roads for $key: ${e.message}")
+                } finally {
+                    refreshingCells.remove(key)
+                }
+            }
+            jobs.add(job)
+        }
+        
+        trimCache(keys.toSet())
+        
+        if (jobs.isNotEmpty()) {
+            Log.d(TAG, "Waiting for ${jobs.size} cell fetches to complete...")
+            jobs.forEach { it.join() }
+            Log.d(TAG, "All pre-cache fetches complete")
         }
     }
 
@@ -134,11 +173,13 @@ class RoadCache(private val overpassApi: OverpassApi) {
         return 111320.0 * cos(Math.toRadians(lat)).coerceAtLeast(0.01)
     }
 
-    private fun roadSignature(road: List<LatLng>): String {
-        val first = road.firstOrNull() ?: return "empty"
-        val last = road.lastOrNull() ?: return "empty"
+    private fun roadSignature(road: RoadSegment): String {
+        val first = road.points.firstOrNull() ?: return "empty"
+        val last = road.points.lastOrNull() ?: return "empty"
         return buildString {
-            append(road.size)
+            append(road.roadClass.wireValue)
+            append(':')
+            append(road.points.size)
             append(':')
             append(first.lat)
             append(':')
@@ -153,7 +194,7 @@ class RoadCache(private val overpassApi: OverpassApi) {
     private data class CellKey(val x: Int, val y: Int)
 
     private data class CachedCell(
-        val roads: List<List<LatLng>>,
+        val roads: List<RoadSegment>,
         val fetchedAtMs: Long
     )
 }

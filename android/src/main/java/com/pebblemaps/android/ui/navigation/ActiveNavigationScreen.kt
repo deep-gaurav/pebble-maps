@@ -4,8 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.Paint
-import android.graphics.Path
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,7 +42,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
@@ -49,8 +53,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.util.Log
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import com.pebblemaps.android.data.RoadCache
 import com.pebblemaps.android.data.pebble.PebbleWatchManager
+import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.MockLocationManager
 import com.pebblemaps.android.domain.model.Route
 import com.pebblemaps.android.domain.model.Step
@@ -59,6 +67,8 @@ import com.pebblemaps.android.domain.model.WatchFrame
 import com.pebblemaps.android.domain.model.toArrow
 import com.pebblemaps.android.domain.model.toDescription
 import com.pebblemaps.android.domain.model.toTurnDirection
+import com.pebblemaps.android.util.PreparedWatchGeometry
+import com.pebblemaps.android.util.WatchGeometryPreparer
 import org.koin.androidx.compose.koinViewModel
 import org.koin.androidx.compose.get
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -81,9 +91,26 @@ fun ActiveNavigationScreen(
     var showDebug by remember { mutableStateOf(false) }
     var speedSlider by remember { mutableFloatStateOf(MockLocationManager.speedKmh.toFloat()) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
+    var currentPreparedGeometry by remember { mutableStateOf<PreparedWatchGeometry?>(null) }
+    var currentViewportMeters by remember { mutableFloatStateOf(150f) }
     
     LaunchedEffect(Unit) {
         state.route?.let { route ->
+            val coordinates = route.geometry.coordinates
+            if (coordinates.isNotEmpty()) {
+                val startPos = coordinates.first()
+                val aheadIdx = minOf(10, coordinates.size - 1)
+                val aheadPos = coordinates[aheadIdx]
+                val bearing = calculateBearing(startPos, aheadPos)
+                
+                try {
+                    roadCache.refreshIfNeededAndWait(startPos, bearing, 150.0)
+                    Log.d("NavScreen", "Road pre-cache complete, starting navigation")
+                } catch (e: Exception) {
+                    Log.e("NavScreen", "Road pre-cache failed: ${e.message}")
+                }
+            }
+            
             MockLocationManager.setRoute(route)
             MockLocationManager.start()
             if (pebbleManager.isPebbleConnected()) {
@@ -101,8 +128,12 @@ fun ActiveNavigationScreen(
                 ?.getOrNull(mock.currentStepIndex)
                 ?.maneuver
                 ?.type
-            val viewportMeters = mapView?.let { computeViewportMeters(it) } ?: 150.0
+            val viewportMeters = pebbleManager.getEffectiveViewportMeters()
             roadCache.refreshIfNeeded(mock.currentPosition, mock.smoothedBearing, viewportMeters)
+            val nearbyRoads = roadCache.getRoads(mock.currentPosition, mock.smoothedBearing, viewportMeters)
+            if (nearbyRoads.isEmpty()) {
+                Log.w("NavScreen", "No roads available at ${mock.currentPosition}, viewport=${viewportMeters.toInt()}m")
+            }
             val frame = WatchFrame(
                 routePoints = route?.geometry?.coordinates ?: emptyList(),
                 currentLocation = mock.currentPosition,
@@ -112,8 +143,11 @@ fun ActiveNavigationScreen(
                 streetName = streetName,
                 bearing = mock.smoothedBearing,
                 viewportMeters = viewportMeters,
-                nearbyRoads = roadCache.getRoads(mock.currentPosition, mock.smoothedBearing, viewportMeters)
+                nearbyRoads = nearbyRoads
             )
+            val geometry = WatchGeometryPreparer.prepare(frame)
+            currentPreparedGeometry = geometry
+            currentViewportMeters = viewportMeters.toFloat()
             pebbleManager.postFrame(frame)
         }
     }
@@ -214,6 +248,8 @@ fun ActiveNavigationScreen(
             isRunning = mock?.isRunning ?: false,
             showDebug = showDebug,
             speedSlider = speedSlider,
+            preparedGeometry = currentPreparedGeometry,
+            viewportMeters = currentViewportMeters.toDouble(),
             onSpeedChange = { newSpeed ->
                 speedSlider = newSpeed
                 MockLocationManager.speedKmh = newSpeed.toDouble()
@@ -278,6 +314,8 @@ fun BottomNavigationPanel(
     isRunning: Boolean,
     showDebug: Boolean,
     speedSlider: Float,
+    preparedGeometry: PreparedWatchGeometry?,
+    viewportMeters: Double,
     onSpeedChange: (Float) -> Unit,
     onPauseResume: () -> Unit,
     onStop: () -> Unit,
@@ -348,6 +386,54 @@ fun BottomNavigationPanel(
                             Text("Stop")
                         }
                     }
+
+                    // Watch preview debug section
+                    preparedGeometry?.let { geometry ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Watch Preview (${geometry.roadSegments.size} roads, ${geometry.estimatedRoadBytes}B, ${viewportMeters.toInt()}m)",
+                                color = ComposeColor.White,
+                                fontSize = 12.sp
+                            )
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                WatchDebugCanvas(
+                                    geometry = geometry,
+                                    viewportMeters = viewportMeters,
+                                    modifier = Modifier.size(100.dp)
+                                )
+                            }
+
+                            // Road class breakdown
+                            val classBreakdown = geometry.roadSegments
+                                .groupBy { it.roadClass }
+                                .mapValues { it.value.size }
+                            Text(
+                                text = classBreakdown.entries
+                                    .sortedBy { it.key.ordinal }
+                                    .joinToString(" ") { "${it.key.name[0]}:${it.value}" },
+                                color = ComposeColor.White.copy(alpha = 0.7f),
+                                fontSize = 10.sp
+                            )
+                        }
+                    } ?: run {
+                        Text(
+                            text = "No road data prepared",
+                            color = ComposeColor.White.copy(alpha = 0.5f),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 16.dp)
+                        )
+                    }
                 }
             }
         }
@@ -412,7 +498,7 @@ private fun createDirectionArrow(bearing: Float): Bitmap {
         style = Paint.Style.FILL
     }
     
-    val path = Path()
+    val path = android.graphics.Path()
     val cx = size / 2f
     val cy = size / 2f
     val arrowSize = size / 2f - 8f
@@ -479,4 +565,87 @@ private fun computeViewportMeters(mapView: MapView): Double {
     val metersPerPixel = screenMeters / tilePixels
     val viewportMeters = metersPerPixel * screenWidth
     return viewportMeters.coerceIn(50.0, 500.0)
+}
+
+@Composable
+private fun WatchDebugCanvas(
+    geometry: PreparedWatchGeometry,
+    viewportMeters: Double,
+    modifier: Modifier = Modifier
+) {
+    val routeColor = ComposeColor.Yellow
+    val roadColor = ComposeColor(0xFF757575)
+
+    Canvas(
+        modifier = modifier
+            .background(ComposeColor.Black)
+    ) {
+        val width = size.width
+        val height = size.height
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val padding = 2f
+        val usableWidth = width - 2 * padding
+        val usableHeight = height - 2 * padding
+
+        val halfViewport = viewportMeters / 2.0
+
+        fun toScreenOffset(xMeters: Double, yMeters: Double): Offset {
+            val nx = (xMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+            val ny = (-yMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+            return Offset(
+                padding + (nx * usableWidth).toFloat(),
+                padding + (ny * usableHeight).toFloat()
+            )
+        }
+
+        // Draw road segments
+        for (segment in geometry.roadSegments) {
+            if (segment.points.size < 2) continue
+            val path = androidx.compose.ui.graphics.Path()
+            val first = toScreenOffset(segment.points.first().xMeters, segment.points.first().yMeters)
+            path.moveTo(first.x, first.y)
+            for (i in 1 until segment.points.size) {
+                val point = toScreenOffset(segment.points[i].xMeters, segment.points[i].yMeters)
+                path.lineTo(point.x, point.y)
+            }
+            drawPath(
+                path = path,
+                color = roadColor,
+                style = Stroke(width = segment.roadClass.previewWidthPx * 0.5f)
+            )
+        }
+
+        // Draw route polyline
+        if (geometry.routePoints.size >= 2) {
+            val routePath = androidx.compose.ui.graphics.Path()
+            val firstRoute = toScreenOffset(geometry.routePoints.first().xMeters, geometry.routePoints.first().yMeters)
+            routePath.moveTo(firstRoute.x, firstRoute.y)
+            for (i in 1 until geometry.routePoints.size) {
+                val point = toScreenOffset(geometry.routePoints[i].xMeters, geometry.routePoints[i].yMeters)
+                routePath.lineTo(point.x, point.y)
+            }
+            drawPath(
+                path = routePath,
+                color = routeColor,
+                style = Stroke(width = 3f)
+            )
+        }
+
+        // Draw center point (current location)
+        drawCircle(color = ComposeColor.Green, radius = 4f, center = Offset(centerX, centerY))
+    }
+}
+
+private fun calculateBearing(from: LatLng, to: LatLng): Float {
+    val lat1 = Math.toRadians(from.lat)
+    val lat2 = Math.toRadians(to.lat)
+    val dLng = Math.toRadians(to.lng - from.lng)
+    
+    val x = sin(dLng) * cos(lat2)
+    val y = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng)
+    
+    var bearing = Math.toDegrees(atan2(x, y)).toFloat()
+    bearing = (bearing + 360) % 360
+    return bearing
 }

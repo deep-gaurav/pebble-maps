@@ -1,7 +1,9 @@
 #include <pebble.h>
+#include <math.h>
 
 #define MAX_POINTS 60
 #define MAX_ROAD_DATA 360
+#define MESSAGE_KEY_ZOOM 22
 
 static Window *s_window;
 static Layer *s_canvas_layer;
@@ -138,27 +140,73 @@ static void format_distance(int32_t meters, char *buf, size_t size) {
   }
 }
 
+static uint8_t road_half_width_for_class(uint8_t road_class) {
+  switch (road_class) {
+    case 3: return 4;
+    case 2: return 3;
+    case 1: return 2;
+    default: return 1;
+  }
+}
+
+static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_class) {
+  int dx = p1.x - p0.x;
+  int dy = p1.y - p0.y;
+  float length = sqrtf((float)(dx * dx + dy * dy));
+  if (length < 0.5f) {
+    return;
+  }
+
+  uint8_t half_width = road_half_width_for_class(road_class);
+  float offset_x = (-(float)dy / length) * half_width;
+  float offset_y = ((float)dx / length) * half_width;
+
+  GPoint quad[4] = {
+    GPoint((int16_t)lroundf(p0.x + offset_x), (int16_t)lroundf(p0.y + offset_y)),
+    GPoint((int16_t)lroundf(p1.x + offset_x), (int16_t)lroundf(p1.y + offset_y)),
+    GPoint((int16_t)lroundf(p1.x - offset_x), (int16_t)lroundf(p1.y - offset_y)),
+    GPoint((int16_t)lroundf(p0.x - offset_x), (int16_t)lroundf(p0.y - offset_y)),
+  };
+
+  GPath path = {
+    .num_points = 4,
+    .points = quad,
+    .rotation = 0,
+    .offset = GPointZero,
+  };
+  graphics_context_set_fill_color(ctx, GColorDarkGray);
+  gpath_draw_filled(ctx, &path);
+}
+
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   GPoint screen_center = GPoint(bounds.size.w / 2, bounds.size.h / 2);
 
-  graphics_context_set_stroke_color(ctx, GColorBlack);
-  graphics_context_set_stroke_width(ctx, 2);
   if (s_has_roads) {
     int ri = 0;
     GPoint road_prev;
     bool road_has_prev = false;
+    bool expecting_class = true;
+    uint8_t road_class = 0;
     while (ri + 1 < s_road_data_len) {
+      if (expecting_class) {
+        road_class = s_road_data[ri];
+        ri += 1;
+        road_has_prev = false;
+        expecting_class = false;
+        continue;
+      }
       uint8_t rx = s_road_data[ri];
       uint8_t ry = s_road_data[ri + 1];
       ri += 2;
       if (rx == 0xFF && ry == 0xFF) {
         road_has_prev = false;
+        expecting_class = true;
         continue;
       }
       GPoint road_p = byte_to_screen(rx, ry);
       if (road_has_prev) {
-        graphics_draw_line(ctx, road_prev, road_p);
+        draw_road_filled(ctx, road_prev, road_p, road_class);
       }
       road_prev = road_p;
       road_has_prev = true;
@@ -205,8 +253,34 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
   APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox failed: %d", (int)reason);
 }
 
+static void send_zoom_to_phone(int8_t delta) {
+  AppMessageResult result;
+  DictionaryIterator *iter;
+  result = app_message_outbox_begin(&iter);
+  if (result != APP_MSG_OK) return;
+  
+  dict_write_int8(iter, MESSAGE_KEY_ZOOM, delta);
+  result = app_message_outbox_send();
+  if (result != APP_MSG_OK) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to send zoom: %d", result);
+  }
+}
+
 static void inbox_dropped_callback(AppMessageResult reason, void *context) {
   APP_LOG(APP_LOG_LEVEL_ERROR, "Inbox dropped: %d", (int)reason);
+}
+
+static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  send_zoom_to_phone(1);
+}
+
+static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  send_zoom_to_phone(-1);
+}
+
+static void click_config_provider(void *context) {
+  window_single_click_subscribe(BUTTON_ID_UP, up_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, down_click_handler);
 }
 
 static void window_load(Window *window) {
@@ -226,6 +300,8 @@ static void window_load(Window *window) {
   app_message_register_outbox_sent(outbox_sent_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
   app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
+
+  window_set_click_config_provider(s_window, click_config_provider);
 }
 
 static void window_unload(Window *window) {

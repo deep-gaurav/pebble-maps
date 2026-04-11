@@ -41,8 +41,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.domain.model.RoadClass
 import com.pebblemaps.android.domain.model.TurnDirection
 import com.pebblemaps.android.domain.model.WatchFrame
+import com.pebblemaps.android.util.PreparedRoadSegment
 import com.pebblemaps.android.util.PreparedWatchGeometry
 import com.pebblemaps.android.util.ViewportPoint
 import com.pebblemaps.android.util.WatchGeometryPreparer
@@ -167,7 +169,7 @@ fun WatchPreviewCanvas(
     val textMeasurer = rememberTextMeasurer()
     val prepared = remember(frame) { WatchGeometryPreparer.prepare(frame) }
     val routeColor = Color.Yellow
-    val roadColor = Color(0xFF6A6A6A)
+    val roadColor = Color(0xFFBDBDBD)
     val textColor = Color.White
 
     Canvas(
@@ -271,18 +273,18 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRoadSegments(
     toScreenOffset: (ViewportPoint) -> Offset
 ) {
     for (segment in prepared.roadSegments) {
-        if (segment.size < 2) continue
+        if (segment.points.size < 2) continue
         val path = Path()
-        val first = toScreenOffset(segment.first())
+        val first = toScreenOffset(segment.points.first())
         path.moveTo(first.x, first.y)
-        for (i in 1 until segment.size) {
-            val point = toScreenOffset(segment[i])
+        for (i in 1 until segment.points.size) {
+            val point = toScreenOffset(segment.points[i])
             path.lineTo(point.x, point.y)
         }
         drawPath(
             path = path,
             color = roadColor,
-            style = Stroke(width = 1.5f)
+            style = Stroke(width = segment.roadClass.previewWidthPx)
         )
     }
 }

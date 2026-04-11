@@ -12,6 +12,7 @@ import com.getpebble.android.kit.PebbleKit
 import com.getpebble.android.kit.util.PebbleDictionary
 import com.pebblemaps.android.domain.model.WatchFrame
 import com.pebblemaps.android.domain.model.WatchRenderConfig
+import com.pebblemaps.android.util.PreparedRoadSegment
 import com.pebblemaps.android.util.PreparedWatchGeometry
 import com.pebblemaps.android.util.ViewportPoint
 import com.pebblemaps.android.util.WatchGeometryPreparer
@@ -34,6 +35,7 @@ class PebbleWatchManager(private val context: Context) {
         const val KEY_SCREEN_HEIGHT = 11
         const val KEY_ROAD_POINTS = 14
         const val KEY_HAS_ROADS = 21
+        const val KEY_ZOOM = 22
 
         private const val INTENT_APP_RECEIVE_ACK = "com.getpebble.action.app.RECEIVE_ACK"
         private const val INTENT_APP_RECEIVE_NACK = "com.getpebble.action.app.RECEIVE_NACK"
@@ -49,6 +51,14 @@ class PebbleWatchManager(private val context: Context) {
     private var lastSentTransactionId = -1
 
     private var watchConfig = WatchRenderConfig(176, 176)
+    private var zoomLevel: Int = 0
+    private val baseViewportMeters: Double = 150.0
+
+    fun getEffectiveViewportMeters(): Double {
+        return baseViewportMeters * (1 shl -zoomLevel)
+    }
+
+    fun getZoomLevel(): Int = zoomLevel
 
     private val ackReceiver: BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -75,6 +85,10 @@ class PebbleWatchManager(private val context: Context) {
             val height = dict.getInteger(KEY_SCREEN_HEIGHT)
             if (width != null && height != null) {
                 watchConfig = WatchRenderConfig(width.toInt(), height.toInt())
+            }
+            val zoomDelta = dict.getInteger(KEY_ZOOM)
+            if (zoomDelta != null) {
+                zoomLevel = (zoomLevel + zoomDelta.toInt()).coerceIn(-2, 2)
             }
         }
     }
@@ -155,11 +169,12 @@ class PebbleWatchManager(private val context: Context) {
         PebbleKit.sendDataToPebbleWithTransactionId(context, APP_UUID, dict, txId)
     }
 
-    private fun packRoadSegments(segments: List<List<ViewportPoint>>, halfViewport: Double): ByteArray {
-        val out = ArrayList<Byte>(segments.sumOf { it.size * 2 + 2 })
+    private fun packRoadSegments(segments: List<PreparedRoadSegment>, halfViewport: Double): ByteArray {
+        val out = ArrayList<Byte>(segments.sumOf { 1 + (it.points.size * 2) + 2 })
         for (segment in segments) {
-            if (segment.size < 2) continue
-            for (point in segment) {
+            if (segment.points.size < 2) continue
+            out.add(segment.roadClass.wireValue.toByte())
+            for (point in segment.points) {
                 val (x, y) = packSinglePoint(point, halfViewport)
                 out.add(x.toByte())
                 out.add(y.toByte())

@@ -1,6 +1,8 @@
 package com.pebblemaps.android.data.remote
 
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.domain.model.RoadClass
+import com.pebblemaps.android.domain.model.RoadSegment
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
@@ -12,7 +14,7 @@ class OverpassApi(private val client: HttpClient) {
 
     private val baseUrl = "https://overpass-api.de/api/interpreter"
 
-    suspend fun fetchRoads(center: LatLng, radiusMeters: Double): List<List<LatLng>> {
+    suspend fun fetchRoads(center: LatLng, radiusMeters: Double): List<RoadSegment> {
         val deltaLat = radiusMeters / 111320.0
         val deltaLng = radiusMeters / (111320.0 * cos(Math.toRadians(center.lat)))
         val south = center.lat - deltaLat
@@ -30,7 +32,10 @@ class OverpassApi(private val client: HttpClient) {
             response.elements
                 .filter { it.type == "way" && it.geometry.size >= 2 }
                 .map { element ->
-                    element.geometry.map { coord -> LatLng(coord.lat, coord.lon) }
+                    RoadSegment(
+                        points = element.geometry.map { coord -> LatLng(coord.lat, coord.lon) },
+                        roadClass = RoadClass.fromHighwayTag(element.tags["highway"])
+                    )
                 }
         } catch (e: Exception) {
             emptyList()
@@ -46,7 +51,8 @@ private data class OverpassResponse(
 @Serializable
 private data class OverpassElement(
     val type: String = "",
-    val geometry: List<OverpassCoord> = emptyList()
+    val geometry: List<OverpassCoord> = emptyList(),
+    val tags: Map<String, String> = emptyMap()
 )
 
 @Serializable

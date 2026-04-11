@@ -1,6 +1,8 @@
 package com.pebblemaps.android.util
 
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.domain.model.RoadClass
+import com.pebblemaps.android.domain.model.RoadSegment
 import com.pebblemaps.android.domain.model.WatchFrame
 import kotlin.math.cos
 import kotlin.math.max
@@ -15,8 +17,13 @@ data class ViewportPoint(
 data class PreparedWatchGeometry(
     val routePoints: List<ViewportPoint>,
     val destinationIndex: Int?,
-    val roadSegments: List<List<ViewportPoint>>,
+    val roadSegments: List<PreparedRoadSegment>,
     val estimatedRoadBytes: Int
+)
+
+data class PreparedRoadSegment(
+    val points: List<ViewportPoint>,
+    val roadClass: RoadClass
 )
 
 object WatchGeometryPreparer {
@@ -41,7 +48,7 @@ object WatchGeometryPreparer {
         } else {
             null
         }
-        val estimatedRoadBytes = roadSegments.sumOf { it.size * 2 + 2 }
+        val estimatedRoadBytes = roadSegments.sumOf { 1 + (it.points.size * 2) + 2 }
 
         return PreparedWatchGeometry(
             routePoints = routePoints,
@@ -84,16 +91,16 @@ object WatchGeometryPreparer {
     }
 
     private fun prepareRoads(
-        roads: List<List<LatLng>>,
+        roads: List<RoadSegment>,
         basis: ProjectionBasis,
         halfViewport: Double,
         routePoints: List<ViewportPoint>
-    ): List<List<ViewportPoint>> {
+    ): List<PreparedRoadSegment> {
         if (roads.isEmpty()) return emptyList()
 
         val prepared = roads.mapNotNull { segment ->
-            if (segment.size < 2) return@mapNotNull null
-            val projected = segment.map { basis.project(it) }
+            if (segment.points.size < 2) return@mapNotNull null
+            val projected = segment.points.map { basis.project(it) }
             val clipped = clipPolyline(projected, halfViewport * (1.0 + ROAD_MARGIN_FACTOR))
             if (clipped.size < 2) return@mapNotNull null
 
@@ -106,8 +113,9 @@ object WatchGeometryPreparer {
             val minToRoute = minDistanceToPolyline(simplified, routePoints)
             val score = minToOrigin + minToRoute * 0.65
             val corridorBonus = if (minToRoute <= ROUTE_CORRIDOR_METERS) -20.0 else 0.0
-            PreparedRoadSegment(
+            RankedRoadSegment(
                 points = simplified,
+                roadClass = segment.roadClass,
                 sortScore = score + corridorBonus
             )
         }
@@ -116,12 +124,12 @@ object WatchGeometryPreparer {
         return prepared
             .sortedBy { it.sortScore }
             .mapNotNull { segment ->
-                val segmentBytes = segment.points.size * 2 + 2
+                val segmentBytes = 1 + (segment.points.size * 2) + 2
                 if (usedBytes + segmentBytes > ROAD_MAX_BYTES) {
                     null
                 } else {
                     usedBytes += segmentBytes
-                    segment.points
+                    PreparedRoadSegment(segment.points, segment.roadClass)
                 }
             }
     }
@@ -344,8 +352,9 @@ object WatchGeometryPreparer {
         val anchorIndex: Int
     )
 
-    private data class PreparedRoadSegment(
+    private data class RankedRoadSegment(
         val points: List<ViewportPoint>,
+        val roadClass: RoadClass,
         val sortScore: Double
     )
 }
