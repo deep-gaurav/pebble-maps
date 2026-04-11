@@ -4,6 +4,8 @@
 #define MAX_POINTS 60
 #define MAX_ROAD_DATA 360
 #define MESSAGE_KEY_ZOOM 22
+#define MESSAGE_KEY_SCREEN_WIDTH 10
+#define MESSAGE_KEY_SCREEN_HEIGHT 11
 
 static Window *s_window;
 static Layer *s_canvas_layer;
@@ -285,6 +287,36 @@ static void send_zoom_to_phone(int8_t delta) {
   }
 }
 
+static void send_screen_size_to_phone(void) {
+  AppMessageResult result;
+  DictionaryIterator *iter;
+  result = app_message_outbox_begin(&iter);
+  if (result != APP_MSG_OK) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to begin screen size msg: %d", result);
+    return;
+  }
+  
+  dict_write_int16(iter, MESSAGE_KEY_SCREEN_WIDTH, s_screen_w);
+  dict_write_int16(iter, MESSAGE_KEY_SCREEN_HEIGHT, s_screen_h);
+  result = app_message_outbox_send();
+  if (result != APP_MSG_OK) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to send screen size: %d", result);
+  } else {
+    APP_LOG(APP_LOG_LEVEL_INFO, "Sent screen size to phone: %dx%d", s_screen_w, s_screen_h);
+  }
+}
+
+static void retry_send_screen_size(void *context) {
+  static int retries = 0;
+  if (retries < 5) {
+    send_screen_size_to_phone();
+    retries++;
+    app_timer_register(500, retry_send_screen_size, NULL);
+  } else {
+    retries = 0;
+  }
+}
+
 static void inbox_dropped_callback(AppMessageResult reason, void *context) {
   APP_LOG(APP_LOG_LEVEL_ERROR, "Inbox dropped: %d", (int)reason);
 }
@@ -319,6 +351,9 @@ static void window_load(Window *window) {
   app_message_register_outbox_sent(outbox_sent_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
   app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
+
+  send_screen_size_to_phone();
+  app_timer_register(1000, retry_send_screen_size, NULL);
 
   window_set_click_config_provider(s_window, click_config_provider);
 }

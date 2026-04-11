@@ -1,11 +1,11 @@
 package com.pebblemaps.android.ui.navigation
 
+import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.Paint
-import android.os.PowerManager
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
@@ -103,19 +103,13 @@ fun ActiveNavigationScreen(
     val context = LocalContext.current
     
     DisposableEffect(Unit) {
-        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        val wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "PebbleMaps::NavigationWakeLock"
-        )
-        wakeLock.acquire(30 * 60 * 1000L)
-        Log.d("NavScreen", "Wakelock acquired")
+        val activity = context as Activity
+        activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Log.d("NavScreen", "Screen kept on")
         
         onDispose {
-            if (wakeLock.isHeld) {
-                wakeLock.release()
-                Log.d("NavScreen", "Wakelock released")
-            }
+            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            Log.d("NavScreen", "Screen keep released")
         }
     }
     

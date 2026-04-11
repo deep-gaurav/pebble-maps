@@ -117,11 +117,8 @@ class RoadCache(private val overpassApi: OverpassApi) {
     }
 
     suspend fun prefetchEntireRoute(coordinates: List<LatLng>, viewportMeters: Double) {
-        _isPrefetching.value = true
-        _prefetchProgress.value = 0f
-        
         if (coordinates.isEmpty()) {
-            _isPrefetching.value = false
+            Log.d(TAG, "Prefetch skipped: empty coordinates")
             return
         }
         
@@ -134,14 +131,38 @@ class RoadCache(private val overpassApi: OverpassApi) {
         
         val keysList = allKeys.toList()
         if (keysList.isEmpty()) {
-            _isPrefetching.value = false
+            Log.d(TAG, "Prefetch skipped: no cells needed")
             return
         }
         
-        val completed = AtomicInteger(0)
+        val now = System.currentTimeMillis()
+        var cachedCount = 0
+        var refreshingCount = 0
+        
+        keysList.forEach { key ->
+            if (cellCache[key] != null) {
+                cachedCount++
+                return@forEach
+            }
+            if (!refreshingCells.add(key)) {
+                refreshingCount++
+                return@forEach
+            }
+        }
+        
+        if (cachedCount == keysList.size) {
+            Log.d(TAG, "Prefetch skipped: all ${keysList.size} cells already cached")
+            return
+        }
+        
+        Log.d(TAG, "Prefetch starting: ${keysList.size} cells, $cachedCount cached, $refreshingCount refreshing")
+        
+        _isPrefetching.value = true
+        _prefetchProgress.value = 0f
+        
+        val completed = AtomicInteger(cachedCount + refreshingCount)
         val totalKeys = keysList.size
         val jobs = mutableListOf<Job>()
-        val now = System.currentTimeMillis()
         
         keysList.forEach { key ->
             if (cellCache[key] != null) {
@@ -172,8 +193,9 @@ class RoadCache(private val overpassApi: OverpassApi) {
         }
         
         jobs.forEach { it.join() }
+        _prefetchProgress.value = 1f
         _isPrefetching.value = false
-        Log.d(TAG, "Route pre-fetch complete: ${keysList.size} cells")
+        Log.d(TAG, "Route pre-fetch complete: ${keysList.size} cells, ${jobs.size} fetched")
     }
 
     private fun trimCache(keysToKeep: Set<CellKey>) {
