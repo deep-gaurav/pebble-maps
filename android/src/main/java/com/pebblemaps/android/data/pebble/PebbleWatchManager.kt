@@ -78,6 +78,8 @@ class PebbleWatchManager(private val context: Context) {
         }
     }
 
+    private var isWatchReady = false
+    
     private val dataReceiver = object : PebbleKit.PebbleDataReceiver(APP_UUID) {
         override fun receiveData(context: Context, transactionId: Int, dict: PebbleDictionary) {
             PebbleKit.sendAckToPebble(context, transactionId)
@@ -85,6 +87,8 @@ class PebbleWatchManager(private val context: Context) {
             val height = dict.getInteger(KEY_SCREEN_HEIGHT)
             if (width != null && height != null) {
                 watchConfig = WatchRenderConfig(width.toInt(), height.toInt())
+                isWatchReady = true
+                Log.d(TAG, "Watch ready: ${width}x${height}")
             }
             val zoomDelta = dict.getInteger(KEY_ZOOM)
             if (zoomDelta != null) {
@@ -129,10 +133,12 @@ class PebbleWatchManager(private val context: Context) {
         handler.removeCallbacksAndMessages(null)
         pendingFrame = null
         isWaitingAck = false
+        isWatchReady = false
     }
 
     private fun startNextFrameIfPossible() {
         if (isWaitingAck) return
+        if (!isWatchReady) return
         val frame = pendingFrame ?: return
         pendingFrame = null
         sendFrame(frame, WatchGeometryPreparer.prepare(frame))

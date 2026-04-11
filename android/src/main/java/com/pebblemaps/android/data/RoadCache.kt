@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.sin
@@ -23,14 +24,15 @@ class RoadCache(private val overpassApi: OverpassApi) {
         private const val TAG = "RoadCache"
         private const val CELL_SIZE_METERS = 180.0
         private const val CELL_RADIUS_METERS = 130.0
-        private const val CELL_TTL_MS = 2 * 60 * 1000L
-        private const val MAX_CACHED_CELLS = 24
+        private const val MAX_CACHED_CELLS = 48
+        private const val MIN_FETCH_INTERVAL_MS = 2000L
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     private val cellCache = linkedMapOf<CellKey, CachedCell>()
     private val refreshingCells = mutableSetOf<CellKey>()
+    private val lastFetchTime = mutableMapOf<CellKey, Long>()
     
     private val _prefetchProgress = MutableStateFlow(0f)
     val prefetchProgress: StateFlow<Float> = _prefetchProgress.asStateFlow()
@@ -51,8 +53,11 @@ class RoadCache(private val overpassApi: OverpassApi) {
     fun refreshIfNeeded(location: LatLng, bearing: Float, viewportMeters: Double) {
         val now = System.currentTimeMillis()
         desiredCells(location, bearing, viewportMeters).forEach { key ->
-            val cached = cellCache[key]
-            if (cached != null && now - cached.fetchedAtMs < CELL_TTL_MS) return@forEach
+            if (cellCache[key] != null) return@forEach
+            
+            val lastFetch = lastFetchTime[key]
+            if (lastFetch != null && now - lastFetch < MIN_FETCH_INTERVAL_MS) return@forEach
+            
             if (!refreshingCells.add(key)) return@forEach
 
             scope.launch {
@@ -62,6 +67,7 @@ class RoadCache(private val overpassApi: OverpassApi) {
                         overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
                     }
                     cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    lastFetchTime[key] = now
                     trimCache(keysToKeep = desiredCells(location, bearing, viewportMeters).toSet())
                     Log.d(TAG, "Fetched ${roads.size} roads for cell=$key")
                 } catch (e: Exception) {
@@ -80,8 +86,7 @@ class RoadCache(private val overpassApi: OverpassApi) {
         val jobs = mutableListOf<Job>()
         
         keys.forEach { key ->
-            val cached = cellCache[key]
-            if (cached != null && now - cached.fetchedAtMs < CELL_TTL_MS) return@forEach
+            if (cellCache[key] != null) return@forEach
             if (!refreshingCells.add(key)) return@forEach
             
             val job = scope.launch {
@@ -91,6 +96,7 @@ class RoadCache(private val overpassApi: OverpassApi) {
                         overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
                     }
                     cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    lastFetchTime[key] = now
                     Log.d(TAG, "Pre-cached ${roads.size} roads for cell=$key")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to pre-cache roads for $key: ${e.message}")
@@ -132,20 +138,18 @@ class RoadCache(private val overpassApi: OverpassApi) {
             return
         }
         
-        var completed = 0
+        val completed = AtomicInteger(0)
+        val totalKeys = keysList.size
         val jobs = mutableListOf<Job>()
         val now = System.currentTimeMillis()
         
         keysList.forEach { key ->
-            val cached = cellCache[key]
-            if (cached != null && now - cached.fetchedAtMs < CELL_TTL_MS) {
-                completed++
-                _prefetchProgress.value = completed.toFloat() / keysList.size
+            if (cellCache[key] != null) {
+                _prefetchProgress.value = completed.incrementAndGet().toFloat() / totalKeys
                 return@forEach
             }
             if (!refreshingCells.add(key)) {
-                completed++
-                _prefetchProgress.value = completed.toFloat() / keysList.size
+                _prefetchProgress.value = completed.incrementAndGet().toFloat() / totalKeys
                 return@forEach
             }
             
@@ -156,12 +160,13 @@ class RoadCache(private val overpassApi: OverpassApi) {
                         overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
                     }
                     cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    lastFetchTime[key] = now
                     Log.d(TAG, "Route pre-fetch: ${roads.size} roads for cell=$key")
                 } catch (e: Exception) {
                     Log.e(TAG, "Route pre-fetch failed for $key: ${e.message}")
                 } finally {
                     refreshingCells.remove(key)
-                    _prefetchProgress.value = (++completed).toFloat() / keysList.size
+                    _prefetchProgress.value = completed.incrementAndGet().toFloat() / totalKeys
                 }
             })
         }

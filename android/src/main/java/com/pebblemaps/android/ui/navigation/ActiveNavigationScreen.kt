@@ -1,9 +1,12 @@
 package com.pebblemaps.android.ui.navigation
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.Paint
+import android.os.PowerManager
+import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -50,6 +53,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -95,6 +99,25 @@ fun ActiveNavigationScreen(
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var currentPreparedGeometry by remember { mutableStateOf<PreparedWatchGeometry?>(null) }
     var currentViewportMeters by remember { mutableFloatStateOf(150f) }
+    
+    val context = LocalContext.current
+    
+    DisposableEffect(Unit) {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "PebbleMaps::NavigationWakeLock"
+        )
+        wakeLock.acquire(30 * 60 * 1000L)
+        Log.d("NavScreen", "Wakelock acquired")
+        
+        onDispose {
+            if (wakeLock.isHeld) {
+                wakeLock.release()
+                Log.d("NavScreen", "Wakelock released")
+            }
+        }
+    }
     
     LaunchedEffect(Unit) {
         state.route?.let { route ->

@@ -168,8 +168,8 @@ fun WatchPreviewCanvas(
 ) {
     val textMeasurer = rememberTextMeasurer()
     val prepared = remember(frame) { WatchGeometryPreparer.prepare(frame) }
-    val routeColor = Color.Yellow
-    val roadColor = Color(0xFFBDBDBD)
+    val routeColor = Color.Black
+    val roadColor = Color(0xFF00FFFF)
     val textColor = Color.White
 
     Canvas(
