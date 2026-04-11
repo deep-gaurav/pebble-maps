@@ -1,6 +1,7 @@
 #include <pebble.h>
 
-#define MAX_POINTS 20
+#define MAX_POINTS 60
+#define MAX_ROAD_DATA 200
 
 static Window *s_window;
 static Layer *s_canvas_layer;
@@ -10,9 +11,11 @@ static uint16_t s_screen_h = 0;
 
 static uint8_t s_num_points = 0;
 static GPoint s_points[MAX_POINTS];
-static uint8_t s_current_loc_index = 0;
 static uint8_t s_destination_index = 255;
-static int32_t s_bearing = 0;
+
+static uint8_t s_road_data[MAX_ROAD_DATA];
+static uint8_t s_road_data_len = 0;
+static bool s_has_roads = false;
 
 static uint8_t s_turn_direction = 0;
 static int32_t s_distance_to_turn = 0;
@@ -35,6 +38,16 @@ static GPoint rotate_point(GPoint p, GPoint center, int32_t angle_hundredths) {
   return GPoint(center.x + dx_rot, center.y + dy_rot);
 }
 
+static GPoint byte_to_screen(uint8_t x, uint8_t y) {
+  uint16_t padding = 10;
+  uint16_t usable_w = s_screen_w - 2 * padding;
+  uint16_t usable_h = s_screen_h - 2 * padding;
+  GPoint p;
+  p.x = padding + ((int)x * usable_w / 255);
+  p.y = padding + ((int)y * usable_h / 255);
+  return p;
+}
+
 static void update_data_from_dict(DictionaryIterator *iter) {
   Tuple *tuple = dict_find(iter, MESSAGE_KEY_NUM_ROUTE_POINTS);
   if (tuple) {
@@ -44,26 +57,14 @@ static void update_data_from_dict(DictionaryIterator *iter) {
     tuple = dict_find(iter, MESSAGE_KEY_ROUTE_POINTS);
     if (tuple && tuple->length >= s_num_points * 2) {
       uint8_t *data = tuple->value->data;
-      uint16_t padding = 10;
-      uint16_t usable_w = s_screen_w - 2 * padding;
-      uint16_t usable_h = s_screen_h - 2 * padding;
       for (int i = 0; i < s_num_points; i++) {
-        uint8_t x = data[i * 2];
-        uint8_t y = data[i * 2 + 1];
-        s_points[i].x = padding + ((int)x * usable_w / 255);
-        s_points[i].y = padding + ((int)y * usable_h / 255);
+        s_points[i] = byte_to_screen(data[i * 2], data[i * 2 + 1]);
       }
     }
   }
 
-  tuple = dict_find(iter, MESSAGE_KEY_CURRENT_LOC_INDEX);
-  if (tuple) s_current_loc_index = tuple->value->uint8;
-
   tuple = dict_find(iter, MESSAGE_KEY_DESTINATION_INDEX);
   if (tuple) s_destination_index = tuple->value->uint8;
-
-  tuple = dict_find(iter, MESSAGE_KEY_BEARING);
-  if (tuple) s_bearing = tuple->value->int32;
 
   tuple = dict_find(iter, MESSAGE_KEY_TURN_DIRECTION);
   if (tuple) s_turn_direction = tuple->value->uint8;
@@ -79,6 +80,20 @@ static void update_data_from_dict(DictionaryIterator *iter) {
     strncpy(s_street_name, tuple->value->cstring, sizeof(s_street_name) - 1);
     s_street_name[sizeof(s_street_name) - 1] = '\0';
   }
+
+  tuple = dict_find(iter, MESSAGE_KEY_ROAD_POINTS);
+  Tuple *road_state = dict_find(iter, MESSAGE_KEY_HAS_ROADS);
+  if (road_state && road_state->value->uint8 == 0) {
+    s_has_roads = false;
+    s_road_data_len = 0;
+  } else if (tuple) {
+    uint16_t len = tuple->length;
+    if (len <= MAX_ROAD_DATA) {
+      memcpy(s_road_data, tuple->value->data, len);
+      s_road_data_len = len;
+      s_has_roads = len > 0;
+    }
+  }
 }
 
 static void draw_turn_arrow_shape(GContext *ctx, GPoint center, uint8_t dir) {
@@ -86,14 +101,14 @@ static void draw_turn_arrow_shape(GContext *ctx, GPoint center, uint8_t dir) {
 
   int32_t angle = 0;
   switch (dir) {
-    case 2: angle = -4500; break;  // SLIGHT_LEFT
-    case 3: angle = -9000; break;  // LEFT
-    case 4: angle = -13500; break; // SHARP_LEFT
-    case 5: angle = 4500; break;   // SLIGHT_RIGHT
-    case 6: angle = 9000; break;   // RIGHT
-    case 7: angle = 13500; break;  // SHARP_RIGHT
-    case 8: angle = 18000; break;  // UTURN
-    default: angle = 0; break;     // STRAIGHT
+    case 2: angle = -4500; break;
+    case 3: angle = -9000; break;
+    case 4: angle = -13500; break;
+    case 5: angle = 4500; break;
+    case 6: angle = 9000; break;
+    case 7: angle = 13500; break;
+    case 8: angle = 18000; break;
+    default: angle = 0; break;
   }
 
   GPoint tip = { center.x, center.y - 12 };
@@ -125,38 +140,49 @@ static void format_distance(int32_t meters, char *buf, size_t size) {
 
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  GPoint center = grect_center_point(&bounds);
+  GPoint screen_center = GPoint(bounds.size.w / 2, bounds.size.h / 2);
 
-  GPoint rotated[MAX_POINTS];
-  for (int i = 0; i < s_num_points; i++) {
-    rotated[i] = rotate_point(s_points[i], center, s_bearing);
-  }
-
-  // Draw route polyline
-  if (s_num_points >= 2) {
-    graphics_context_set_stroke_color(ctx, GColorVividCerulean);
-    graphics_context_set_stroke_width(ctx, 5);
-    for (int i = 0; i < s_num_points - 1; i++) {
-      graphics_draw_line(ctx, rotated[i], rotated[i + 1]);
+  graphics_context_set_stroke_color(ctx, GColorDarkGray);
+  graphics_context_set_stroke_width(ctx, 1);
+  if (s_has_roads) {
+    int ri = 0;
+    GPoint road_prev;
+    bool road_has_prev = false;
+    while (ri + 1 < s_road_data_len) {
+      uint8_t rx = s_road_data[ri];
+      uint8_t ry = s_road_data[ri + 1];
+      ri += 2;
+      if (rx == 0xFF && ry == 0xFF) {
+        road_has_prev = false;
+        continue;
+      }
+      GPoint road_p = byte_to_screen(rx, ry);
+      if (road_has_prev) {
+        graphics_draw_line(ctx, road_prev, road_p);
+      }
+      road_prev = road_p;
+      road_has_prev = true;
     }
   }
 
-  // Draw destination if visible in viewport
+  if (s_num_points >= 2) {
+    graphics_context_set_stroke_color(ctx, GColorVividCerulean);
+    graphics_context_set_stroke_width(ctx, 3);
+    for (int i = 0; i < s_num_points - 1; i++) {
+      graphics_draw_line(ctx, s_points[i], s_points[i + 1]);
+    }
+  }
+
   if (s_destination_index < s_num_points) {
     graphics_context_set_fill_color(ctx, GColorRed);
-    graphics_fill_circle(ctx, rotated[s_destination_index], 4);
+    graphics_fill_circle(ctx, s_points[s_destination_index], 4);
   }
 
-  // Draw current location
-  if (s_current_loc_index < s_num_points) {
-    graphics_context_set_fill_color(ctx, GColorGreen);
-    graphics_fill_circle(ctx, rotated[s_current_loc_index], 5);
-  }
+  graphics_context_set_fill_color(ctx, GColorGreen);
+  graphics_fill_circle(ctx, screen_center, 5);
 
-  // Turn arrow (drawn as vector shape at bottom)
   draw_turn_arrow_shape(ctx, GPoint(bounds.size.w / 2, bounds.size.h - 38), s_turn_direction);
 
-  // Distance to turn (bottom text)
   char dist_buf[16];
   format_distance(s_distance_to_turn, dist_buf, sizeof(dist_buf));
   graphics_context_set_text_color(ctx, GColorBlack);
@@ -199,7 +225,7 @@ static void window_load(Window *window) {
   app_message_register_inbox_dropped(inbox_dropped_callback);
   app_message_register_outbox_sent(outbox_sent_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
-  app_message_open(256, 64);
+  app_message_open(512, 64);
 }
 
 static void window_unload(Window *window) {

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.util.Log
+import com.pebblemaps.android.data.RoadCache
 import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.domain.model.MockLocationManager
 import com.pebblemaps.android.domain.model.Route
@@ -75,6 +76,7 @@ fun ActiveNavigationScreen(
     val state by viewModel.state.collectAsState()
     val mockState by MockLocationManager.stateFlow.collectAsState()
     val pebbleManager: PebbleWatchManager = get()
+    val roadCache: RoadCache = get()
     
     var showDebug by remember { mutableStateOf(false) }
     var speedSlider by remember { mutableFloatStateOf(MockLocationManager.speedKmh.toFloat()) }
@@ -99,6 +101,8 @@ fun ActiveNavigationScreen(
                 ?.getOrNull(mock.currentStepIndex)
                 ?.maneuver
                 ?.type
+            val viewportMeters = mapView?.let { computeViewportMeters(it) } ?: 150.0
+            roadCache.refreshIfNeeded(mock.currentPosition, viewportMeters)
             val frame = WatchFrame(
                 routePoints = route?.geometry?.coordinates ?: emptyList(),
                 currentLocation = mock.currentPosition,
@@ -106,9 +110,11 @@ fun ActiveNavigationScreen(
                 distanceToNextTurn = mock.distanceToNextTurn,
                 distanceRemaining = mock.totalRemainingDistance,
                 streetName = streetName,
-                bearing = mock.smoothedBearing
+                bearing = mock.smoothedBearing,
+                viewportMeters = viewportMeters,
+                nearbyRoads = roadCache.getRoads()
             )
-            pebbleManager.postWatchFrame(frame)
+            pebbleManager.postFrame(frame)
         }
     }
     
@@ -463,4 +469,14 @@ private fun getCurrentTurnDirection(route: Route?, stepIndex: Int): TurnDirectio
     }
     
     return TurnDirection.STRAIGHT
+}
+
+private fun computeViewportMeters(mapView: MapView): Double {
+    val zoom = mapView.zoomLevelDouble
+    val screenMeters = 360.0 / (256.0 * Math.pow(2.0, zoom)) * 111320.0
+    val screenWidth = mapView.width.toDouble().coerceAtLeast(1.0)
+    val tilePixels = 256.0
+    val metersPerPixel = screenMeters / tilePixels
+    val viewportMeters = metersPerPixel * screenWidth
+    return viewportMeters.coerceIn(50.0, 500.0)
 }

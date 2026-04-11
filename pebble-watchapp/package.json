@@ -27,13 +27,14 @@
       "SCREEN_HEIGHT": 11,
       "BITMAP_CHUNK_INDEX": 12,
       "BITMAP_TOTAL_CHUNKS": 13,
-      "BITMAP_DATA": 14,
+      "ROAD_POINTS": 14,
       "TILE_INDEX": 15,
       "TILE_TOTAL": 16,
       "TILE_WIDTH": 17,
       "TILE_HEIGHT": 18,
       "BITMAP_FORMAT": 19,
-      "BITMAP_ACK": 20
+      "BITMAP_ACK": 20,
+      "HAS_ROADS": 21
     },
     "resources": {
       "media": []

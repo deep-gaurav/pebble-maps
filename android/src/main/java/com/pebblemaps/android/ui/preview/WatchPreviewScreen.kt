@@ -43,12 +43,11 @@ import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.TurnDirection
 import com.pebblemaps.android.domain.model.WatchFrame
-import com.pebblemaps.android.domain.model.WatchRenderConfig
+import com.pebblemaps.android.util.PreparedWatchGeometry
+import com.pebblemaps.android.util.ViewportPoint
+import com.pebblemaps.android.util.WatchGeometryPreparer
 import org.koin.androidx.compose.koinViewModel
 import org.koin.androidx.compose.get
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
 
 @Composable
 fun WatchPreviewScreen(
@@ -99,7 +98,7 @@ fun WatchPreviewScreen(
             val pebbleManager: PebbleWatchManager = get()
             TextButton(onClick = {
                 pebbleManager.launchWatchApp()
-                pebbleManager.postWatchFrame(frame ?: defaultFrame)
+                pebbleManager.postFrame(frame ?: defaultFrame)
             }) {
                 Text("Launch on Pebble")
             }
@@ -141,7 +140,6 @@ fun WatchPreviewScreen(
             contentAlignment = Alignment.Center
         ) {
             WatchPreviewCanvas(
-                config = config,
                 frame = frame ?: defaultFrame,
                 modifier = Modifier
                     .aspectRatio(1f)
@@ -163,144 +161,129 @@ fun WatchPreviewScreen(
 
 @Composable
 fun WatchPreviewCanvas(
-    config: WatchRenderConfig,
     frame: WatchFrame,
     modifier: Modifier = Modifier
 ) {
     val textMeasurer = rememberTextMeasurer()
-    val backgroundColor = Color.Black
+    val prepared = remember(frame) { WatchGeometryPreparer.prepare(frame) }
     val routeColor = Color.Yellow
-    val currentLocationColor = Color.Green
+    val roadColor = Color(0xFF6A6A6A)
     val textColor = Color.White
 
     Canvas(
-        modifier = modifier.background(backgroundColor)
+        modifier = modifier.background(Color.Black)
     ) {
         val width = size.width
         val height = size.height
+        val centerX = width / 2f
+        val centerY = height / 2f
 
-        if (frame.routePoints.size >= 2) {
-            val minLat = frame.routePoints.minOf { it.lat }
-            val maxLat = frame.routePoints.maxOf { it.lat }
-            val minLng = frame.routePoints.minOf { it.lng }
-            val maxLng = frame.routePoints.maxOf { it.lng }
+        val halfViewport = frame.viewportMeters / 2.0
+        val padding = 10f
+        val usableWidth = width - 2 * padding
+        val usableHeight = height - 2 * padding
 
-            val padding = 20f
-            val usableWidth = width - 2 * padding
-            val usableHeight = height - 2 * padding
-
-            val latRange = maxLat - minLat
-            val lngRange = maxLng - minLng
-
-            fun LatLng.toCanvasPoint(): Offset {
-                val x = if (lngRange > 0) {
-                    padding + ((lng - minLng) / lngRange * usableWidth).toFloat()
-                } else {
-                    width / 2
-                }
-                val y = if (latRange > 0) {
-                    padding + ((maxLat - lat) / latRange * usableHeight).toFloat()
-                } else {
-                    height / 2
-                }
-                return Offset(x, y)
-            }
-
-            val path = Path()
-            val points = frame.routePoints.map { it.toCanvasPoint() }
-            path.moveTo(points.first().x, points.first().y)
-            for (i in 1 until points.size) {
-                path.lineTo(points[i].x, points[i].y)
-            }
-            drawPath(
-                path = path,
-                color = routeColor,
-                style = Stroke(width = 3f)
+        fun ViewportPoint.toScreenOffset(): Offset {
+            val nx = (xMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+            val ny = (-yMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+            return Offset(
+                padding + (nx * usableWidth).toFloat(),
+                padding + (ny * usableHeight).toFloat()
             )
+        }
 
-            frame.currentLocation.toCanvasPoint().let {
-                drawCircle(
-                    color = currentLocationColor,
-                    radius = 8f,
-                    center = it
+        drawRoadSegments(prepared, roadColor) { point -> point.toScreenOffset() }
+
+        if (prepared.routePoints.size >= 2) {
+            val screenPoints = prepared.routePoints.map { it.toScreenOffset() }
+
+            if (screenPoints.size >= 2) {
+                val path = Path()
+                path.moveTo(screenPoints.first().x, screenPoints.first().y)
+                for (i in 1 until screenPoints.size) {
+                    path.lineTo(screenPoints[i].x, screenPoints[i].y)
+                }
+                drawPath(
+                    path = path,
+                    color = routeColor,
+                    style = Stroke(width = 3f)
                 )
             }
 
-            val lastPoint = points.last()
-            drawCircle(
-                color = Color.Red,
-                radius = 6f,
-                center = lastPoint
-            )
+            prepared.destinationIndex?.let { destIdx ->
+                if (destIdx < screenPoints.size) {
+                    drawCircle(color = Color.Red, radius = 6f, center = screenPoints[destIdx])
+                }
+            }
         }
 
+        drawCircle(color = Color.Green, radius = 8f, center = Offset(centerX, centerY))
+
         val turnText = when (frame.turnDirection) {
-            TurnDirection.RIGHT -> "→"
-            TurnDirection.LEFT -> "←"
-            TurnDirection.STRAIGHT -> "↑"
-            TurnDirection.SLIGHT_LEFT -> "↖"
-            TurnDirection.SLIGHT_RIGHT -> "↗"
-            TurnDirection.SHARP_LEFT -> "⇐"
-            TurnDirection.SHARP_RIGHT -> "⇒"
-            TurnDirection.UTURN -> "↺"
+            TurnDirection.RIGHT -> "\u2192"
+            TurnDirection.LEFT -> "\u2190"
+            TurnDirection.STRAIGHT -> "\u2191"
+            TurnDirection.SLIGHT_LEFT -> "\u2196"
+            TurnDirection.SLIGHT_RIGHT -> "\u2197"
+            TurnDirection.SHARP_LEFT -> "\u21d0"
+            TurnDirection.SHARP_RIGHT -> "\u21d2"
+            TurnDirection.UTURN -> "\u21ba"
             TurnDirection.NONE -> ""
         }
 
-        val turnTextStyle = TextStyle(
-            color = textColor,
-            fontSize = 32.sp,
-            fontWeight = FontWeight.Bold
+        if (turnText.isNotEmpty()) {
+            drawText(
+                textMeasurer = textMeasurer,
+                text = turnText,
+                topLeft = Offset(centerX - 20f, 8f),
+                style = TextStyle(color = textColor, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+            )
+        }
+
+        drawText(
+            textMeasurer = textMeasurer,
+            text = formatDistance(frame.distanceToNextTurn),
+            topLeft = Offset(centerX - 30f, centerY - 20f),
+            style = TextStyle(color = textColor, fontSize = 14.sp, fontWeight = FontWeight.Normal)
         )
 
         drawText(
             textMeasurer = textMeasurer,
-            text = turnText,
-            topLeft = Offset(width / 2 - 20f, height / 2 - 60f),
-            style = turnTextStyle
-        )
-
-        val distanceText = formatDistance(frame.distanceToNextTurn)
-        val distanceStyle = TextStyle(
-            color = textColor,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Normal
-        )
-
-        drawText(
-            textMeasurer = textMeasurer,
-            text = distanceText,
-            topLeft = Offset(width / 2 - 30f, height / 2 - 20f),
-            style = distanceStyle
-        )
-
-        val remainingText = formatDistance(frame.distanceRemaining)
-        val remainingStyle = TextStyle(
-            color = textColor,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Normal
-        )
-
-        drawText(
-            textMeasurer = textMeasurer,
-            text = remainingText,
-            topLeft = Offset(width / 2 - 25f, height - 30f),
-            style = remainingStyle
+            text = formatDistance(frame.distanceRemaining),
+            topLeft = Offset(centerX - 25f, height - 30f),
+            style = TextStyle(color = textColor, fontSize = 11.sp, fontWeight = FontWeight.Normal)
         )
 
         frame.streetName?.let { street ->
-            val streetStyle = TextStyle(
-                color = textColor,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Normal
-            )
-
             drawText(
                 textMeasurer = textMeasurer,
                 text = street,
-                topLeft = Offset(width / 2 - 40f, height / 2 + 10f),
-                style = streetStyle
+                topLeft = Offset(centerX - 40f, centerY + 10f),
+                style = TextStyle(color = textColor, fontSize = 10.sp, fontWeight = FontWeight.Normal)
             )
         }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRoadSegments(
+    prepared: PreparedWatchGeometry,
+    roadColor: Color,
+    toScreenOffset: (ViewportPoint) -> Offset
+) {
+    for (segment in prepared.roadSegments) {
+        if (segment.size < 2) continue
+        val path = Path()
+        val first = toScreenOffset(segment.first())
+        path.moveTo(first.x, first.y)
+        for (i in 1 until segment.size) {
+            val point = toScreenOffset(segment[i])
+            path.lineTo(point.x, point.y)
+        }
+        drawPath(
+            path = path,
+            color = roadColor,
+            style = Stroke(width = 1.5f)
+        )
     }
 }
 
