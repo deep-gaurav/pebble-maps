@@ -15,7 +15,8 @@ data class ViewportPoint(
 data class PreparedWatchGeometry(
     val routePoints: List<ViewportPoint>,
     val destinationIndex: Int?,
-    val roadSegments: List<List<ViewportPoint>>
+    val roadSegments: List<List<ViewportPoint>>,
+    val estimatedRoadBytes: Int
 )
 
 object WatchGeometryPreparer {
@@ -25,7 +26,8 @@ object WatchGeometryPreparer {
     private const val ROUTE_LOOK_AHEAD_FACTOR = 1.8
     private const val ROUTE_MARGIN_FACTOR = 0.2
     private const val ROAD_MARGIN_FACTOR = 0.12
-    private const val ROAD_MAX_BYTES = 180
+    private const val ROUTE_CORRIDOR_METERS = 42.0
+    private const val ROAD_MAX_BYTES = 320
 
     fun prepare(frame: WatchFrame): PreparedWatchGeometry {
         val basis = ProjectionBasis(frame.currentLocation, frame.bearing)
@@ -33,17 +35,19 @@ object WatchGeometryPreparer {
 
         val projectedDestination = frame.routePoints.lastOrNull()?.let { basis.project(it) }
         val routePoints = prepareRoute(frame.routePoints, basis, halfViewport)
-        val roadSegments = prepareRoads(frame.nearbyRoads, basis, halfViewport)
+        val roadSegments = prepareRoads(frame.nearbyRoads, basis, halfViewport, routePoints)
         val destinationIndex = if (projectedDestination != null && isInside(projectedDestination, halfViewport)) {
             routePoints.indexOfLast { distance(it, projectedDestination) <= 2.0 }.takeIf { it >= 0 }
         } else {
             null
         }
+        val estimatedRoadBytes = roadSegments.sumOf { it.size * 2 + 2 }
 
         return PreparedWatchGeometry(
             routePoints = routePoints,
             destinationIndex = destinationIndex,
-            roadSegments = roadSegments
+            roadSegments = roadSegments,
+            estimatedRoadBytes = estimatedRoadBytes
         )
     }
 
@@ -82,7 +86,8 @@ object WatchGeometryPreparer {
     private fun prepareRoads(
         roads: List<List<LatLng>>,
         basis: ProjectionBasis,
-        halfViewport: Double
+        halfViewport: Double,
+        routePoints: List<ViewportPoint>
     ): List<List<ViewportPoint>> {
         if (roads.isEmpty()) return emptyList()
 
@@ -97,19 +102,26 @@ object WatchGeometryPreparer {
                 max(halfViewport / 36.0, 1.5)
             )
             if (simplified.size < 2) return@mapNotNull null
-            simplified
+            val minToOrigin = minDistanceToOrigin(simplified)
+            val minToRoute = minDistanceToPolyline(simplified, routePoints)
+            val score = minToOrigin + minToRoute * 0.65
+            val corridorBonus = if (minToRoute <= ROUTE_CORRIDOR_METERS) -20.0 else 0.0
+            PreparedRoadSegment(
+                points = simplified,
+                sortScore = score + corridorBonus
+            )
         }
 
         var usedBytes = 0
         return prepared
-            .sortedBy { minDistanceToOrigin(it) }
+            .sortedBy { it.sortScore }
             .mapNotNull { segment ->
-                val segmentBytes = segment.size * 2 + 2
+                val segmentBytes = segment.points.size * 2 + 2
                 if (usedBytes + segmentBytes > ROAD_MAX_BYTES) {
                     null
                 } else {
                     usedBytes += segmentBytes
-                    segment
+                    segment.points
                 }
             }
     }
@@ -251,6 +263,35 @@ object WatchGeometryPreparer {
         return points.minOfOrNull { sqrt(squaredDistance(it)) } ?: Double.MAX_VALUE
     }
 
+    private fun minDistanceToPolyline(points: List<ViewportPoint>, route: List<ViewportPoint>): Double {
+        if (points.isEmpty() || route.size < 2) return Double.MAX_VALUE
+
+        var best = Double.MAX_VALUE
+        for (point in points) {
+            for (i in 0 until route.lastIndex) {
+                val projection = projectPointOntoSegment(point, route[i], route[i + 1])
+                if (projection < best) best = projection
+            }
+        }
+        return best
+    }
+
+    private fun projectPointOntoSegment(
+        point: ViewportPoint,
+        start: ViewportPoint,
+        end: ViewportPoint
+    ): Double {
+        val dx = end.xMeters - start.xMeters
+        val dy = end.yMeters - start.yMeters
+        val lenSq = dx * dx + dy * dy
+        if (lenSq < 1e-9) return distance(point, start)
+
+        val t = (((point.xMeters - start.xMeters) * dx) + ((point.yMeters - start.yMeters) * dy)) / lenSq
+        val clamped = t.coerceIn(0.0, 1.0)
+        val nearest = interpolate(start, end, clamped)
+        return distance(point, nearest)
+    }
+
     private fun squaredDistance(point: ViewportPoint): Double {
         return point.xMeters * point.xMeters + point.yMeters * point.yMeters
     }
@@ -301,5 +342,10 @@ object WatchGeometryPreparer {
     private data class AnchorInsertion(
         val points: List<ViewportPoint>,
         val anchorIndex: Int
+    )
+
+    private data class PreparedRoadSegment(
+        val points: List<ViewportPoint>,
+        val sortScore: Double
     )
 }

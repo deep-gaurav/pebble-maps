@@ -20,7 +20,9 @@ data class MockLocationState(
 object MockLocationManager {
     private const val TAG = "MockLocationManager"
     private const val TICK_MS = 50L
-    private const val SMOOTHING_FACTOR = 0.2f
+    private const val BASE_SMOOTHING_FACTOR = 0.2f
+    private const val MEDIUM_TURN_SMOOTHING_FACTOR = 0.35f
+    private const val SHARP_TURN_SMOOTHING_FACTOR = 0.55f
     
     private var route: Route? = null
     private var allCoords: List<LatLng> = emptyList()
@@ -208,7 +210,7 @@ object MockLocationManager {
         }
         
         val (position, bearing) = getPositionAtDistance(distanceTraveled)
-        smoothedBearing = lerpBearing(smoothedBearing, bearing, SMOOTHING_FACTOR)
+        smoothedBearing = lerpBearing(smoothedBearing, bearing, smoothingFactorForTurn(smoothedBearing, bearing))
         
         val remaining = totalRouteDistance - distanceTraveled
         
@@ -260,6 +262,16 @@ object MockLocationManager {
         if (result < 0) result += 360
         if (result >= 360) result -= 360
         return result
+    }
+
+    private fun smoothingFactorForTurn(from: Float, to: Float): Float {
+        var diff = abs(to - from)
+        if (diff > 180f) diff = 360f - diff
+        return when {
+            diff >= 35f -> SHARP_TURN_SMOOTHING_FACTOR
+            diff >= 15f -> MEDIUM_TURN_SMOOTHING_FACTOR
+            else -> BASE_SMOOTHING_FACTOR
+        }
     }
     
     private fun createCompletedState(lastPos: LatLng): MockLocationState {

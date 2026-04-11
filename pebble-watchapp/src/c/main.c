@@ -1,7 +1,7 @@
 #include <pebble.h>
 
 #define MAX_POINTS 60
-#define MAX_ROAD_DATA 200
+#define MAX_ROAD_DATA 360
 
 static Window *s_window;
 static Layer *s_canvas_layer;
@@ -142,8 +142,8 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   GPoint screen_center = GPoint(bounds.size.w / 2, bounds.size.h / 2);
 
-  graphics_context_set_stroke_color(ctx, GColorDarkGray);
-  graphics_context_set_stroke_width(ctx, 1);
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  graphics_context_set_stroke_width(ctx, 2);
   if (s_has_roads) {
     int ri = 0;
     GPoint road_prev;
@@ -225,7 +225,7 @@ static void window_load(Window *window) {
   app_message_register_inbox_dropped(inbox_dropped_callback);
   app_message_register_outbox_sent(outbox_sent_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
-  app_message_open(512, 64);
+  app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
 }
 
 static void window_unload(Window *window) {

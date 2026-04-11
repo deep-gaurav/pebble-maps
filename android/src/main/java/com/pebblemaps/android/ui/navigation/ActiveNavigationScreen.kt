@@ -102,7 +102,7 @@ fun ActiveNavigationScreen(
                 ?.maneuver
                 ?.type
             val viewportMeters = mapView?.let { computeViewportMeters(it) } ?: 150.0
-            roadCache.refreshIfNeeded(mock.currentPosition, viewportMeters)
+            roadCache.refreshIfNeeded(mock.currentPosition, mock.smoothedBearing, viewportMeters)
             val frame = WatchFrame(
                 routePoints = route?.geometry?.coordinates ?: emptyList(),
                 currentLocation = mock.currentPosition,
@@ -112,7 +112,7 @@ fun ActiveNavigationScreen(
                 streetName = streetName,
                 bearing = mock.smoothedBearing,
                 viewportMeters = viewportMeters,
-                nearbyRoads = roadCache.getRoads()
+                nearbyRoads = roadCache.getRoads(mock.currentPosition, mock.smoothedBearing, viewportMeters)
             )
             pebbleManager.postFrame(frame)
         }

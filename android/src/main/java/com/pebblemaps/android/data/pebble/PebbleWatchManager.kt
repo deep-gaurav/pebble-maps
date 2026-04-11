@@ -44,12 +44,9 @@ class PebbleWatchManager(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
 
     private var pendingFrame: WatchFrame? = null
-    private var currentFrame: WatchFrame? = null
-    private var currentGeometry: PreparedWatchGeometry? = null
-    private var sendPhase = 0 // 0=idle, 1=header sent, 2=roads sent
+    private var isWaitingAck = false
     private var nextTransactionId = 0
     private var lastSentTransactionId = -1
-    private var isWaitingAck = false
 
     private var watchConfig = WatchRenderConfig(176, 176)
 
@@ -58,7 +55,7 @@ class PebbleWatchManager(private val context: Context) {
             val tx = intent.getIntExtra(TRANSACTION_ID_KEY, -1)
             if (tx != lastSentTransactionId) return
             isWaitingAck = false
-            handler.post { onAckReceived() }
+            handler.post { startNextFrameIfPossible() }
         }
     }
 
@@ -67,7 +64,7 @@ class PebbleWatchManager(private val context: Context) {
             val tx = intent.getIntExtra(TRANSACTION_ID_KEY, -1)
             if (tx != lastSentTransactionId) return
             isWaitingAck = false
-            handler.post { onAckReceived() }
+            handler.post { startNextFrameIfPossible() }
         }
     }
 
@@ -83,12 +80,24 @@ class PebbleWatchManager(private val context: Context) {
     }
 
     init {
-        ContextCompat.registerReceiver(context, ackReceiver,
-            IntentFilter(INTENT_APP_RECEIVE_ACK), ContextCompat.RECEIVER_EXPORTED)
-        ContextCompat.registerReceiver(context, nackReceiver,
-            IntentFilter(INTENT_APP_RECEIVE_NACK), ContextCompat.RECEIVER_EXPORTED)
-        ContextCompat.registerReceiver(context, dataReceiver,
-            IntentFilter(INTENT_APP_RECEIVE_DATA), ContextCompat.RECEIVER_EXPORTED)
+        ContextCompat.registerReceiver(
+            context,
+            ackReceiver,
+            IntentFilter(INTENT_APP_RECEIVE_ACK),
+            ContextCompat.RECEIVER_EXPORTED
+        )
+        ContextCompat.registerReceiver(
+            context,
+            nackReceiver,
+            IntentFilter(INTENT_APP_RECEIVE_NACK),
+            ContextCompat.RECEIVER_EXPORTED
+        )
+        ContextCompat.registerReceiver(
+            context,
+            dataReceiver,
+            IntentFilter(INTENT_APP_RECEIVE_DATA),
+            ContextCompat.RECEIVER_EXPORTED
+        )
     }
 
     fun getWatchConfig(): WatchRenderConfig = watchConfig
@@ -97,31 +106,27 @@ class PebbleWatchManager(private val context: Context) {
 
     fun postFrame(frame: WatchFrame) {
         pendingFrame = frame
-        if (sendPhase == 0 && !isWaitingAck) {
-            startNextFrame()
+        if (!isWaitingAck) {
+            startNextFrameIfPossible()
         }
     }
 
     fun stopSending() {
         handler.removeCallbacksAndMessages(null)
         pendingFrame = null
-        currentFrame = null
-        currentGeometry = null
-        sendPhase = 0
         isWaitingAck = false
     }
 
-    private fun startNextFrame() {
+    private fun startNextFrameIfPossible() {
+        if (isWaitingAck) return
         val frame = pendingFrame ?: return
         pendingFrame = null
-        currentFrame = frame
-        currentGeometry = WatchGeometryPreparer.prepare(frame)
-        sendPhase = 1
-        sendHeader(frame, currentGeometry ?: PreparedWatchGeometry(emptyList(), null, emptyList()))
+        sendFrame(frame, WatchGeometryPreparer.prepare(frame))
     }
 
-    private fun sendHeader(frame: WatchFrame, geometry: PreparedWatchGeometry) {
-        val packedRoute = packPoints(geometry.routePoints, frame.viewportMeters / 2.0)
+    private fun sendFrame(frame: WatchFrame, geometry: PreparedWatchGeometry) {
+        val routeBytes = packPoints(geometry.routePoints, frame.viewportMeters / 2.0)
+        val roadBytes = packRoadSegments(geometry.roadSegments, frame.viewportMeters / 2.0)
 
         val dict = PebbleDictionary().apply {
             addUint8(KEY_TURN_DIRECTION, frame.turnDirection.ordinal.toByte())
@@ -129,58 +134,17 @@ class PebbleWatchManager(private val context: Context) {
             addInt32(KEY_DISTANCE_REMAINING, frame.distanceRemaining.toInt())
             addString(KEY_STREET_NAME, frame.streetName?.take(20) ?: "")
             addUint8(KEY_NUM_ROUTE_POINTS, geometry.routePoints.size.toByte())
-            addBytes(KEY_ROUTE_POINTS, packedRoute)
+            addBytes(KEY_ROUTE_POINTS, routeBytes)
             addUint8(KEY_DESTINATION_INDEX, (geometry.destinationIndex ?: 255).toByte())
-        }
-
-        sendDict(dict)
-        Log.d(TAG, "Header: ${geometry.routePoints.size} pts, destIdx=${geometry.destinationIndex ?: 255}")
-    }
-
-    private fun sendRoads(geometry: PreparedWatchGeometry, halfViewport: Double) {
-        val roadBytes = mutableListOf<Byte>()
-        for (segment in geometry.roadSegments) {
-            if (segment.size < 2) continue
-            for (point in segment) {
-                val (x, y) = packSinglePoint(point, halfViewport)
-                roadBytes.add(x.toByte())
-                roadBytes.add(y.toByte())
-            }
-            roadBytes.add(0xFF.toByte())
-            roadBytes.add(0xFF.toByte())
-        }
-
-        val dict = PebbleDictionary().apply {
             addUint8(KEY_HAS_ROADS, if (roadBytes.isEmpty()) 0.toByte() else 1.toByte())
-            addBytes(KEY_ROAD_POINTS, roadBytes.toByteArray())
+            addBytes(KEY_ROAD_POINTS, roadBytes)
         }
+
         sendDict(dict)
-        Log.d(TAG, "Roads: ${roadBytes.size / 2} entries")
-    }
-
-    private fun onAckReceived() {
-        when (sendPhase) {
-            1 -> {
-                val frame = currentFrame
-                val geometry = currentGeometry
-                if (frame != null && geometry != null) {
-                    sendPhase = 2
-                    sendRoads(geometry, frame.viewportMeters / 2.0)
-                } else {
-                    finishFrame()
-                }
-            }
-            2 -> {
-                finishFrame()
-            }
-        }
-    }
-
-    private fun finishFrame() {
-        sendPhase = 0
-        currentFrame = null
-        currentGeometry = null
-        startNextFrame()
+        Log.d(
+            TAG,
+            "Frame: routePts=${geometry.routePoints.size} roadBytes=${geometry.estimatedRoadBytes} packedRoadBytes=${roadBytes.size}"
+        )
     }
 
     private fun sendDict(dict: PebbleDictionary) {
@@ -189,6 +153,21 @@ class PebbleWatchManager(private val context: Context) {
         lastSentTransactionId = txId
         isWaitingAck = true
         PebbleKit.sendDataToPebbleWithTransactionId(context, APP_UUID, dict, txId)
+    }
+
+    private fun packRoadSegments(segments: List<List<ViewportPoint>>, halfViewport: Double): ByteArray {
+        val out = ArrayList<Byte>(segments.sumOf { it.size * 2 + 2 })
+        for (segment in segments) {
+            if (segment.size < 2) continue
+            for (point in segment) {
+                val (x, y) = packSinglePoint(point, halfViewport)
+                out.add(x.toByte())
+                out.add(y.toByte())
+            }
+            out.add(0xFF.toByte())
+            out.add(0xFF.toByte())
+        }
+        return out.toByteArray()
     }
 
     private fun packPoints(points: List<ViewportPoint>, halfViewport: Double): ByteArray {
@@ -202,10 +181,8 @@ class PebbleWatchManager(private val context: Context) {
     }
 
     private fun packSinglePoint(point: ViewportPoint, halfViewport: Double): Pair<Int, Int> {
-        val sx = point.xMeters
-        val sy = point.yMeters
-        val nx = (sx / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
-        val ny = (-sy / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+        val nx = (point.xMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+        val ny = (-point.yMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
         return Pair(
             (nx * 255).toInt().coerceIn(0, 254),
             (ny * 255).toInt().coerceIn(0, 254)

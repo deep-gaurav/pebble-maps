@@ -9,54 +9,151 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.cos
-import kotlin.math.sqrt
+import kotlin.math.floor
+import kotlin.math.sin
 
 class RoadCache(private val overpassApi: OverpassApi) {
 
     companion object {
         private const val TAG = "RoadCache"
-        private const val MIN_REFRESH_DISTANCE = 60.0
-        private const val MAX_REFRESH_DISTANCE = 140.0
-        private const val MIN_QUERY_RADIUS = 120.0
-        private const val MAX_QUERY_RADIUS = 260.0
+        private const val CELL_SIZE_METERS = 180.0
+        private const val CELL_RADIUS_METERS = 130.0
+        private const val CELL_TTL_MS = 2 * 60 * 1000L
+        private const val MAX_CACHED_CELLS = 24
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private var cachedRoads: List<List<LatLng>> = emptyList()
-    private var lastQueryCenter: LatLng? = null
-    private var isRefreshing = false
+    private val cellCache = linkedMapOf<CellKey, CachedCell>()
+    private val refreshingCells = mutableSetOf<CellKey>()
 
-    fun getRoads(): List<List<LatLng>> = cachedRoads
+    fun getRoads(location: LatLng, bearing: Float, viewportMeters: Double): List<List<LatLng>> {
+        val keys = desiredCells(location, bearing, viewportMeters)
+        return keys
+            .asSequence()
+            .mapNotNull { cellCache[it]?.roads }
+            .flatten()
+            .distinctBy { roadSignature(it) }
+            .toList()
+    }
 
-    fun refreshIfNeeded(location: LatLng, viewportMeters: Double) {
-        val refreshDistance = (viewportMeters * 0.45).coerceIn(MIN_REFRESH_DISTANCE, MAX_REFRESH_DISTANCE)
-        val queryRadius = (viewportMeters * 0.95).coerceIn(MIN_QUERY_RADIUS, MAX_QUERY_RADIUS)
-        val last = lastQueryCenter
-        if (last != null && meterDistance(last, location) < refreshDistance) return
-        if (isRefreshing) return
+    fun refreshIfNeeded(location: LatLng, bearing: Float, viewportMeters: Double) {
+        val now = System.currentTimeMillis()
+        desiredCells(location, bearing, viewportMeters).forEach { key ->
+            val cached = cellCache[key]
+            if (cached != null && now - cached.fetchedAtMs < CELL_TTL_MS) return@forEach
+            if (!refreshingCells.add(key)) return@forEach
 
-        isRefreshing = true
-        lastQueryCenter = location
-
-        scope.launch {
-            try {
-                val roads = withContext(Dispatchers.IO) {
-                    overpassApi.fetchRoads(location, queryRadius)
+            scope.launch {
+                try {
+                    val center = cellCenter(key, location.lat)
+                    val roads = withContext(Dispatchers.IO) {
+                        overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
+                    }
+                    cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    trimCache(keysToKeep = desiredCells(location, bearing, viewportMeters).toSet())
+                    Log.d(TAG, "Fetched ${roads.size} roads for cell=$key")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to fetch roads for $key: ${e.message}")
+                } finally {
+                    refreshingCells.remove(key)
                 }
-                cachedRoads = roads
-                Log.d(TAG, "Fetched ${roads.size} road segments for radius=$queryRadius")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to fetch roads: ${e.message}")
-            } finally {
-                isRefreshing = false
             }
         }
     }
 
-    private fun meterDistance(a: LatLng, b: LatLng): Double {
-        val dLat = (a.lat - b.lat) * 111320.0
-        val dLng = (a.lng - b.lng) * 111320.0 * cos(Math.toRadians((a.lat + b.lat) / 2.0))
-        return sqrt(dLat * dLat + dLng * dLng)
+    private fun trimCache(keysToKeep: Set<CellKey>) {
+        if (cellCache.size <= MAX_CACHED_CELLS) return
+
+        val removable = cellCache.keys
+            .filterNot { it in keysToKeep }
+            .sortedBy { cellCache[it]?.fetchedAtMs ?: Long.MAX_VALUE }
+
+        var idx = 0
+        while (cellCache.size > MAX_CACHED_CELLS && idx < removable.size) {
+            cellCache.remove(removable[idx])
+            idx++
+        }
     }
+
+    private fun desiredCells(location: LatLng, bearing: Float, viewportMeters: Double): List<CellKey> {
+        val centerKey = cellKey(location)
+        val forwardOffset = offset(location, bearing, viewportMeters * 0.75)
+        val forwardKey = cellKey(forwardOffset)
+        val lateralLeft = offset(location, bearing - 90f, viewportMeters * 0.45)
+        val lateralRight = offset(location, bearing + 90f, viewportMeters * 0.45)
+
+        return linkedSetOf<CellKey>().apply {
+            add(centerKey)
+            addAll(neighborCells(centerKey))
+            add(forwardKey)
+            addAll(neighborCells(forwardKey, radius = 1))
+            add(cellKey(lateralLeft))
+            add(cellKey(lateralRight))
+        }.toList()
+    }
+
+    private fun neighborCells(center: CellKey, radius: Int = 1): List<CellKey> {
+        val cells = mutableListOf<CellKey>()
+        for (dx in -radius..radius) {
+            for (dy in -radius..radius) {
+                cells += CellKey(center.x + dx, center.y + dy)
+            }
+        }
+        return cells
+    }
+
+    private fun cellKey(location: LatLng): CellKey {
+        val latMeters = location.lat * 111320.0
+        val lngMeters = location.lng * metersPerLng(location.lat)
+        return CellKey(
+            x = floor(lngMeters / CELL_SIZE_METERS).toInt(),
+            y = floor(latMeters / CELL_SIZE_METERS).toInt()
+        )
+    }
+
+    private fun cellCenter(key: CellKey, referenceLat: Double): LatLng {
+        val latMeters = (key.y + 0.5) * CELL_SIZE_METERS
+        val lngMeters = (key.x + 0.5) * CELL_SIZE_METERS
+        val lat = latMeters / 111320.0
+        val lng = lngMeters / metersPerLng(referenceLat)
+        return LatLng(lat, lng)
+    }
+
+    private fun offset(origin: LatLng, bearingDegrees: Float, distanceMeters: Double): LatLng {
+        val radians = Math.toRadians(bearingDegrees.toDouble())
+        val north = cos(radians) * distanceMeters
+        val east = sin(radians) * distanceMeters
+        return LatLng(
+            lat = origin.lat + north / 111320.0,
+            lng = origin.lng + east / metersPerLng(origin.lat)
+        )
+    }
+
+    private fun metersPerLng(lat: Double): Double {
+        return 111320.0 * cos(Math.toRadians(lat)).coerceAtLeast(0.01)
+    }
+
+    private fun roadSignature(road: List<LatLng>): String {
+        val first = road.firstOrNull() ?: return "empty"
+        val last = road.lastOrNull() ?: return "empty"
+        return buildString {
+            append(road.size)
+            append(':')
+            append(first.lat)
+            append(':')
+            append(first.lng)
+            append(':')
+            append(last.lat)
+            append(':')
+            append(last.lng)
+        }
+    }
+
+    private data class CellKey(val x: Int, val y: Int)
+
+    private data class CachedCell(
+        val roads: List<List<LatLng>>,
+        val fetchedAtMs: Long
+    )
 }
