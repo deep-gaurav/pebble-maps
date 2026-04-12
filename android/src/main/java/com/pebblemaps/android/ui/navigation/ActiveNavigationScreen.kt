@@ -153,6 +153,10 @@ fun ActiveNavigationScreen(
             val viewportMeters = pebbleManager.getEffectiveViewportMeters()
             roadCache.refreshIfNeeded(mock.currentPosition, mock.smoothedBearing, viewportMeters)
             val nearbyRoads = roadCache.nearbyRoads.value
+            val nearbyFeatures = roadCache.nearbyFeatures.value
+            val timeRemainingSeconds = if (mock.currentSpeedKmh > 0.5) {
+                mock.totalRemainingDistance / (mock.currentSpeedKmh / 3.6)
+            } else 0.0
             if (nearbyRoads.isEmpty()) {
                 Log.w("NavScreen", "No roads available at ${mock.currentPosition}, viewport=${viewportMeters.toInt()}m")
             }
@@ -165,7 +169,9 @@ fun ActiveNavigationScreen(
                 streetName = streetName,
                 bearing = mock.smoothedBearing,
                 viewportMeters = viewportMeters,
-                nearbyRoads = nearbyRoads
+                nearbyRoads = nearbyRoads,
+                nearbyFeatures = nearbyFeatures,
+                timeRemainingSeconds = timeRemainingSeconds
             )
             val geometry = WatchGeometryPreparer.prepare(frame)
             currentPreparedGeometry = geometry
@@ -186,6 +192,10 @@ fun ActiveNavigationScreen(
                     ?.maneuver
                     ?.type
                 val viewportMeters = pebbleManager.getEffectiveViewportMeters()
+                val nearbyFeatures = roadCache.nearbyFeatures.value
+                val timeRemainingSeconds = if (m.currentSpeedKmh > 0.5) {
+                    m.totalRemainingDistance / (m.currentSpeedKmh / 3.6)
+                } else 0.0
                 val frame = WatchFrame(
                     routePoints = route?.geometry?.coordinates ?: emptyList(),
                     currentLocation = m.currentPosition,
@@ -195,7 +205,9 @@ fun ActiveNavigationScreen(
                     streetName = streetName,
                     bearing = m.smoothedBearing,
                     viewportMeters = viewportMeters,
-                    nearbyRoads = nearbyRoads
+                    nearbyRoads = nearbyRoads,
+                    nearbyFeatures = nearbyFeatures,
+                    timeRemainingSeconds = timeRemainingSeconds
                 )
                 val geometry = WatchGeometryPreparer.prepare(frame)
                 currentPreparedGeometry = geometry

@@ -27,9 +27,22 @@ enum class RoadClass(val wireValue: Int, val previewWidthPx: Float, val watchHal
     }
 }
 
+enum class FeatureType(val wireValue: Int) {
+    WATER(0),
+    PARK(1),
+    BUILDING(2)
+}
+
+data class MapFeature(
+    val type: FeatureType,
+    val bounds: List<LatLng> // 4 corners
+)
+
 data class RoadSegment(
     val points: List<LatLng>,
-    val roadClass: RoadClass
+    val roadClass: RoadClass,
+    val isBridge: Boolean = false,
+    val isTunnel: Boolean = false
 )
 
 data class WatchFrame(
@@ -41,7 +54,9 @@ data class WatchFrame(
     val streetName: String?,
     val bearing: Float = 0f,
     val viewportMeters: Double = 150.0,
-    val nearbyRoads: List<RoadSegment> = emptyList()
+    val nearbyRoads: List<RoadSegment> = emptyList(),
+    val nearbyFeatures: List<MapFeature> = emptyList(),
+    val timeRemainingSeconds: Double = 0.0
 )
 
 enum class TurnDirection {

@@ -4,6 +4,7 @@
 #define MAX_POINTS 60
 #define MAX_ROAD_DATA 700
 #define MESSAGE_KEY_ZOOM 22
+#define MESSAGE_KEY_TIME_REMAINING 23
 #define MESSAGE_KEY_SCREEN_WIDTH 10
 #define MESSAGE_KEY_SCREEN_HEIGHT 11
 
@@ -24,6 +25,7 @@ static bool s_has_roads = false;
 static uint8_t s_turn_direction = 0;
 static int32_t s_distance_to_turn = 0;
 static int32_t s_distance_remaining = 0;
+static int32_t s_time_remaining = 0;
 static int32_t s_bearing = 0;
 static char s_street_name[21] = "";
 
@@ -77,6 +79,9 @@ static void update_data_from_dict(DictionaryIterator *iter) {
   tuple = dict_find(iter, MESSAGE_KEY_BEARING);
   if (tuple) s_bearing = tuple->value->int32;
 
+  tuple = dict_find(iter, MESSAGE_KEY_TIME_REMAINING);
+  if (tuple) s_time_remaining = tuple->value->int32;
+
   tuple = dict_find(iter, MESSAGE_KEY_STREET_NAME);
   if (tuple) {
     strncpy(s_street_name, tuple->value->cstring, sizeof(s_street_name) - 1);
@@ -96,6 +101,7 @@ static void update_data_from_dict(DictionaryIterator *iter) {
       s_has_roads = len > 0;
     }
   }
+
 }
 
 static GBitmap* bitmap_for_turn(uint8_t dir) {
@@ -166,7 +172,7 @@ static void draw_bearing_arrow(GContext *ctx, GPoint center) {
   gpath_draw_filled(ctx, &path);
 }
 
-static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_class) {
+static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t half_width, GColor color) {
   int dx = p1.x - p0.x;
   int dy = p1.y - p0.y;
   float length = sqrtf((float)(dx * dx + dy * dy));
@@ -174,9 +180,8 @@ static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_c
     return;
   }
 
-  uint8_t half_width = road_half_width_for_class(road_class);
   float offset_x = (-(float)dy / length) * half_width;
-  float offset_y = ((float)dx / length) * half_width;
+  float offset_y = ((float)dx / length) * half_width * (1.0f / 0.7f);
 
   GPoint quad[4] = {
     GPoint((int16_t)lroundf(p0.x + offset_x), (int16_t)lroundf(p0.y + offset_y)),
@@ -191,17 +196,43 @@ static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_c
     .rotation = 0,
     .offset = GPointZero,
   };
-#ifdef PBL_COLOR
-  graphics_context_set_fill_color(ctx, GColorCyan);
-#else
-  graphics_context_set_fill_color(ctx, GColorBlack);
-#endif
+  graphics_context_set_fill_color(ctx, color);
   gpath_draw_filled(ctx, &path);
+}
+
+static void draw_road_class(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_class) {
+  uint8_t hw = road_half_width_for_class(road_class);
+#ifdef PBL_COLOR
+  draw_road_filled(ctx, p0, p1, hw, GColorCyan);
+#else
+  draw_road_filled(ctx, p0, p1, hw, GColorBlack);
+#endif
+}
+
+static void format_time(int32_t seconds, char *buf, size_t size) {
+  if (seconds <= 0) {
+    snprintf(buf, size, "--");
+    return;
+  }
+  if (seconds < 60) {
+    snprintf(buf, size, "%ds", (int)seconds);
+  } else if (seconds < 3600) {
+    snprintf(buf, size, "%dmin", (int)(seconds / 60));
+  } else {
+    int h = seconds / 3600;
+    int m = (seconds % 3600) / 60;
+    if (m == 0) {
+      snprintf(buf, size, "%dh", h);
+    } else {
+      snprintf(buf, size, "%dh %dmin", h, m);
+    }
+  }
 }
 
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  GPoint screen_center = GPoint(bounds.size.w / 2, bounds.size.h * 4 / 5);
+  int bottom_bar_h = 24;
+  GPoint screen_center = GPoint(bounds.size.w / 2, (bounds.size.h - bottom_bar_h) * 4 / 5);
 
   graphics_context_set_fill_color(ctx, GColorWhite);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
@@ -211,10 +242,19 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     GPoint road_prev;
     bool road_has_prev = false;
     bool expecting_class = true;
+    uint8_t road_class_flags = 0;
     uint8_t road_class = 0;
+    bool is_bridge = false;
+
+    typedef struct { GPoint p0; GPoint p1; uint8_t cls; } BridgeLine;
+    BridgeLine bridges[40];
+    int bridge_count = 0;
+
     while (ri + 1 < s_road_data_len) {
       if (expecting_class) {
-        road_class = s_road_data[ri];
+        road_class_flags = s_road_data[ri];
+        road_class = road_class_flags & 0x3F;
+        is_bridge = (road_class_flags & 0x40) != 0;
         ri += 1;
         road_has_prev = false;
         expecting_class = false;
@@ -230,10 +270,29 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
       }
       GPoint road_p = byte_to_screen(rx, ry);
       if (road_has_prev) {
-        draw_road_filled(ctx, road_prev, road_p, road_class);
+        if (is_bridge) {
+          if (bridge_count < 40) {
+            bridges[bridge_count].p0 = road_prev;
+            bridges[bridge_count].p1 = road_p;
+            bridges[bridge_count].cls = road_class;
+            bridge_count++;
+          }
+        } else {
+          draw_road_class(ctx, road_prev, road_p, road_class);
+        }
       }
       road_prev = road_p;
       road_has_prev = true;
+    }
+
+    for (int bi = 0; bi < bridge_count; bi++) {
+      uint8_t hw = road_half_width_for_class(bridges[bi].cls);
+#ifdef PBL_COLOR
+      draw_road_filled(ctx, bridges[bi].p0, bridges[bi].p1, hw + 2, GColorBlack);
+      draw_road_filled(ctx, bridges[bi].p0, bridges[bi].p1, hw + 1, GColorCyan);
+#else
+      draw_road_filled(ctx, bridges[bi].p0, bridges[bi].p1, hw + 1, GColorBlack);
+#endif
     }
   }
 
@@ -253,10 +312,10 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   draw_bearing_arrow(ctx, screen_center);
 
   int indicator_x = 8;
-  int indicator_y = bounds.size.h - 55;
+  int indicator_y = bounds.size.h - bottom_bar_h - 64;
   int indicator_size = 36;
-  
-  GRect bg_rect = GRect(indicator_x - 4, indicator_y - 4, indicator_size + 8, indicator_size + 28);
+
+  GRect bg_rect = GRect(indicator_x - 4, indicator_y - 4, indicator_size + 8, indicator_size + 32);
   graphics_context_set_fill_color(ctx, GColorWhite);
   graphics_fill_rect(ctx, bg_rect, 4, GCornersAll);
   graphics_context_set_stroke_color(ctx, GColorBlack);
@@ -278,9 +337,30 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   char dist_buf[16];
   format_distance(s_distance_to_turn, dist_buf, sizeof(dist_buf));
   graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, dist_buf, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                     GRect(indicator_x - 4, indicator_y + indicator_size + 2, indicator_size + 8, 18),
+  graphics_draw_text(ctx, dist_buf, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(indicator_x - 4, indicator_y + indicator_size + 4, indicator_size + 8, 22),
                      GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+
+  // Bottom info bar
+  GRect bar_rect = GRect(0, bounds.size.h - bottom_bar_h, bounds.size.w, bottom_bar_h);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bar_rect, 0, GCornerNone);
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  graphics_context_set_stroke_width(ctx, 1);
+  graphics_draw_line(ctx, GPoint(0, bounds.size.h - bottom_bar_h), GPoint(bounds.size.w, bounds.size.h - bottom_bar_h));
+
+  char total_dist_buf[16];
+  format_distance(s_distance_remaining, total_dist_buf, sizeof(total_dist_buf));
+  char time_buf[16];
+  format_time(s_time_remaining, time_buf, sizeof(time_buf));
+
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, total_dist_buf, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(4, bounds.size.h - bottom_bar_h + 2, bounds.size.w / 2 - 6, bottom_bar_h - 4),
+                     GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  graphics_draw_text(ctx, time_buf, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(bounds.size.w / 2 + 2, bounds.size.h - bottom_bar_h + 2, bounds.size.w / 2 - 6, bottom_bar_h - 4),
+                     GTextOverflowModeWordWrap, GTextAlignmentRight, NULL);
 }
 
 static void inbox_received_callback(DictionaryIterator *iter, void *context) {

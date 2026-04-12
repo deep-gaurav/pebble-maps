@@ -34,7 +34,8 @@
       "TILE_HEIGHT": 18,
       "BITMAP_FORMAT": 19,
       "BITMAP_ACK": 20,
-      "HAS_ROADS": 21
+      "HAS_ROADS": 21,
+      "TIME_REMAINING": 23
     },
     "resources": {
       "media": [

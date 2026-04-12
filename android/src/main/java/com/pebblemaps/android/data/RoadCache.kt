@@ -3,6 +3,7 @@ package com.pebblemaps.android.data
 import android.util.Log
 import com.pebblemaps.android.data.remote.ProtomapsTileApi
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.domain.model.MapFeature
 import com.pebblemaps.android.domain.model.RoadSegment
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +48,9 @@ class RoadCache(private val tileApi: ProtomapsTileApi) {
     private val _nearbyRoads = MutableStateFlow<List<RoadSegment>>(emptyList())
     val nearbyRoads: StateFlow<List<RoadSegment>> = _nearbyRoads.asStateFlow()
 
+    private val _nearbyFeatures = MutableStateFlow<List<MapFeature>>(emptyList())
+    val nearbyFeatures: StateFlow<List<MapFeature>> = _nearbyFeatures.asStateFlow()
+
     private val _tileDebugInfo = MutableStateFlow<List<TileDebugInfo>>(emptyList())
     val tileDebugInfo: StateFlow<List<TileDebugInfo>> = _tileDebugInfo.asStateFlow()
 
@@ -74,7 +78,14 @@ class RoadCache(private val tileApi: ProtomapsTileApi) {
             .flatten()
             .distinctBy { roadSignature(it) }
             .toList()
+        val features = keys
+            .asSequence()
+            .mapNotNull { tileCache[it]?.features }
+            .flatten()
+            .distinctBy { featureSignature(it) }
+            .toList()
         _nearbyRoads.value = roads
+        _nearbyFeatures.value = features
         return roads
     }
 
@@ -100,13 +111,13 @@ class RoadCache(private val tileApi: ProtomapsTileApi) {
 
             scope.launch {
                 try {
-                    val roads = withContext(Dispatchers.IO) {
+                    val content = withContext(Dispatchers.IO) {
                         tileApi.fetchRoadsForTile(key.z, key.x, key.y)
                     }
-                    tileCache[key] = CachedTile(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    tileCache[key] = CachedTile(roads = content.roads, features = content.features, fetchedAtMs = System.currentTimeMillis())
                     lastFetchTime[key] = now
                     recomputeNearbyRoads()
-                    Log.d("PebbleMapsRoads", "Tile fetched $key: ${roads.size} roads")
+                    Log.d("PebbleMapsRoads", "Tile fetched $key: ${content.roads.size} roads, ${content.features.size} features")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to fetch tile $key: ${e.message}")
                 } finally {
@@ -143,12 +154,12 @@ class RoadCache(private val tileApi: ProtomapsTileApi) {
 
             val job = scope.launch {
                 try {
-                    val roads = withContext(Dispatchers.IO) {
+                    val content = withContext(Dispatchers.IO) {
                         tileApi.fetchRoadsForTile(key.z, key.x, key.y)
                     }
-                    tileCache[key] = CachedTile(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    tileCache[key] = CachedTile(roads = content.roads, features = content.features, fetchedAtMs = System.currentTimeMillis())
                     lastFetchTime[key] = now
-                    Log.d(TAG, "Pre-cached ${roads.size} roads for tile=$key")
+                    Log.d(TAG, "Pre-cached ${content.roads.size} roads, ${content.features.size} features for tile=$key")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to pre-cache tile $key: ${e.message}")
                 } finally {
@@ -207,12 +218,12 @@ class RoadCache(private val tileApi: ProtomapsTileApi) {
             jobs.add(scope.launch {
                 semaphore.withPermit {
                     try {
-                        val roads = withContext(Dispatchers.IO) {
+                        val content = withContext(Dispatchers.IO) {
                             tileApi.fetchRoadsForTile(key.z, key.x, key.y)
                         }
-                        tileCache[key] = CachedTile(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                        tileCache[key] = CachedTile(roads = content.roads, features = content.features, fetchedAtMs = System.currentTimeMillis())
                         lastFetchTime[key] = now
-                        Log.d(TAG, "Route pre-fetch: ${roads.size} roads for tile=$key")
+                        Log.d(TAG, "Route pre-fetch: ${content.roads.size} roads, ${content.features.size} features for tile=$key")
                     } catch (e: Exception) {
                         Log.e(TAG, "Route pre-fetch failed for $key: ${e.message}")
                     } finally {
@@ -255,8 +266,15 @@ class RoadCache(private val tileApi: ProtomapsTileApi) {
             .flatten()
             .distinctBy { roadSignature(it) }
             .toList()
-        Log.d("PebbleMapsRoads", "Recomputed roads: ${roads.size} segments from ${keys.size} tiles")
+        val features = keys
+            .asSequence()
+            .mapNotNull { tileCache[it]?.features }
+            .flatten()
+            .distinctBy { featureSignature(it) }
+            .toList()
+        Log.d("PebbleMapsRoads", "Recomputed roads: ${roads.size} segments, ${features.size} features from ${keys.size} tiles")
         _nearbyRoads.value = roads
+        _nearbyFeatures.value = features
         updateTileDebugInfo(keys.toList())
     }
 
@@ -285,8 +303,28 @@ class RoadCache(private val tileApi: ProtomapsTileApi) {
         val last = road.points.lastOrNull() ?: return "empty"
         return buildString {
             append(road.roadClass.wireValue)
+            append(road.isBridge)
+            append(road.isTunnel)
             append(':')
             append(road.points.size)
+            append(':')
+            append(first.lat)
+            append(':')
+            append(first.lng)
+            append(':')
+            append(last.lat)
+            append(':')
+            append(last.lng)
+        }
+    }
+
+    private fun featureSignature(feature: MapFeature): String {
+        val first = feature.bounds.firstOrNull() ?: return "empty"
+        val last = feature.bounds.lastOrNull() ?: return "empty"
+        return buildString {
+            append(feature.type.name)
+            append(':')
+            append(feature.bounds.size)
             append(':')
             append(first.lat)
             append(':')
@@ -304,6 +342,7 @@ class RoadCache(private val tileApi: ProtomapsTileApi) {
 
     private data class CachedTile(
         val roads: List<RoadSegment>,
+        val features: List<MapFeature>,
         val fetchedAtMs: Long
     )
 }

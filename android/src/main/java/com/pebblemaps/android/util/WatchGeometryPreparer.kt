@@ -1,7 +1,9 @@
 package com.pebblemaps.android.util
 
 import android.util.Log
+import com.pebblemaps.android.domain.model.FeatureType
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.domain.model.MapFeature
 import com.pebblemaps.android.domain.model.RoadClass
 import com.pebblemaps.android.domain.model.RoadSegment
 import com.pebblemaps.android.domain.model.WatchFrame
@@ -19,12 +21,21 @@ data class PreparedWatchGeometry(
     val routePoints: List<ViewportPoint>,
     val destinationIndex: Int?,
     val roadSegments: List<PreparedRoadSegment>,
-    val estimatedRoadBytes: Int
+    val estimatedRoadBytes: Int,
+    val features: List<PreparedMapFeature>,
+    val estimatedFeatureBytes: Int
 )
 
 data class PreparedRoadSegment(
     val points: List<ViewportPoint>,
-    val roadClass: RoadClass
+    val roadClass: RoadClass,
+    val isBridge: Boolean = false,
+    val isTunnel: Boolean = false
+)
+
+data class PreparedMapFeature(
+    val type: FeatureType,
+    val bounds: List<ViewportPoint> // 4 corners
 )
 
 object WatchGeometryPreparer {
@@ -36,6 +47,7 @@ object WatchGeometryPreparer {
     private const val ROAD_MARGIN_FACTOR = 0.12
     private const val ROUTE_CORRIDOR_METERS = 42.0
     private const val ROAD_MAX_BYTES = 700
+    private const val FEATURE_MAX_BYTES = 150
 
     fun prepare(frame: WatchFrame): PreparedWatchGeometry {
         val basis = ProjectionBasis(frame.currentLocation, frame.bearing)
@@ -44,18 +56,22 @@ object WatchGeometryPreparer {
         val projectedDestination = frame.routePoints.lastOrNull()?.let { basis.project(it) }
         val routePoints = prepareRoute(frame.routePoints, basis, halfViewport)
         val roadSegments = prepareRoads(frame.nearbyRoads, basis, halfViewport, routePoints)
+        val features = prepareFeatures(frame.nearbyFeatures, basis, halfViewport)
         val destinationIndex = if (projectedDestination != null && isInside(projectedDestination, halfViewport)) {
             routePoints.indexOfLast { distance(it, projectedDestination) <= 2.0 }.takeIf { it >= 0 }
         } else {
             null
         }
         val estimatedRoadBytes = roadSegments.sumOf { 1 + (it.points.size * 2) + 2 }
+        val estimatedFeatureBytes = features.sumOf { 1 + (it.bounds.size * 2) }
 
         return PreparedWatchGeometry(
             routePoints = routePoints,
             destinationIndex = destinationIndex,
             roadSegments = roadSegments,
-            estimatedRoadBytes = estimatedRoadBytes
+            estimatedRoadBytes = estimatedRoadBytes,
+            features = features,
+            estimatedFeatureBytes = estimatedFeatureBytes
         )
     }
 
@@ -130,6 +146,8 @@ object WatchGeometryPreparer {
             RankedRoadSegment(
                 points = simplified,
                 roadClass = segment.roadClass,
+                isBridge = segment.isBridge,
+                isTunnel = segment.isTunnel,
                 sortScore = score + corridorBonus + classBonus
             )
         }
@@ -145,11 +163,53 @@ object WatchGeometryPreparer {
                     null
                 } else {
                     usedBytes += segmentBytes
-                    PreparedRoadSegment(segment.points, segment.roadClass)
+                    PreparedRoadSegment(segment.points, segment.roadClass, segment.isBridge, segment.isTunnel)
                 }
             }
 
         Log.d("RoadPrepare", "prepareRoads: input=${roads.size} tooFew=$tooFewPoints clippedOut=$clippedOut simplifiedOut=$simplifiedOut ranked=${prepared.size} budgetDropped=$budgetDropped final=${result.size} bytes=$usedBytes halfVP=${halfViewport.toInt()}m")
+        return result
+    }
+
+    private fun prepareFeatures(
+        features: List<MapFeature>,
+        basis: ProjectionBasis,
+        halfViewport: Double
+    ): List<PreparedMapFeature> {
+        if (features.isEmpty()) return emptyList()
+
+        val prepared = features.mapNotNull { feature ->
+            val projected = feature.bounds.map { basis.project(it) }
+            val margin = halfViewport * 0.05
+            val anyInside = projected.any { isInside(it, halfViewport + margin) }
+            if (!anyInside) return@mapNotNull null
+
+            val minX = projected.minOf { it.xMeters }
+            val maxX = projected.maxOf { it.xMeters }
+            val minY = projected.minOf { it.yMeters }
+            val maxY = projected.maxOf { it.yMeters }
+            val area = kotlin.math.abs(maxX - minX) * kotlin.math.abs(maxY - minY)
+            RankedMapFeature(
+                type = feature.type,
+                bounds = projected,
+                area = area
+            )
+        }
+
+        var usedBytes = 0
+        val result = prepared
+            .sortedByDescending { it.area }
+            .mapNotNull { feature ->
+                val featureBytes = 1 + (feature.bounds.size * 2)
+                if (usedBytes + featureBytes > FEATURE_MAX_BYTES) {
+                    null
+                } else {
+                    usedBytes += featureBytes
+                    PreparedMapFeature(feature.type, feature.bounds)
+                }
+            }
+
+        Log.d("RoadPrepare", "prepareFeatures: input=${features.size} ranked=${prepared.size} final=${result.size} bytes=$usedBytes")
         return result
     }
 
@@ -374,6 +434,14 @@ object WatchGeometryPreparer {
     private data class RankedRoadSegment(
         val points: List<ViewportPoint>,
         val roadClass: RoadClass,
+        val isBridge: Boolean,
+        val isTunnel: Boolean,
         val sortScore: Double
+    )
+
+    private data class RankedMapFeature(
+        val type: FeatureType,
+        val bounds: List<ViewportPoint>,
+        val area: Double
     )
 }

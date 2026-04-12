@@ -37,6 +37,7 @@ class PebbleWatchManager(private val context: Context) {
         const val KEY_HAS_ROADS = 21
         const val KEY_BEARING = 8
         const val KEY_ZOOM = 22
+        const val KEY_TIME_REMAINING = 23
 
         private const val INTENT_APP_RECEIVE_ACK = "com.getpebble.action.app.RECEIVE_ACK"
         private const val INTENT_APP_RECEIVE_NACK = "com.getpebble.action.app.RECEIVE_NACK"
@@ -152,6 +153,7 @@ class PebbleWatchManager(private val context: Context) {
             addBytes(KEY_ROUTE_POINTS, routeBytes)
             addUint8(KEY_DESTINATION_INDEX, (geometry.destinationIndex ?: 255).toByte())
             addInt32(KEY_BEARING, frame.bearing.toInt() * 100)
+            addInt32(KEY_TIME_REMAINING, frame.timeRemainingSeconds.toInt())
             addUint8(KEY_HAS_ROADS, if (roadBytes.isEmpty()) 0.toByte() else 1.toByte())
             addBytes(KEY_ROAD_POINTS, roadBytes)
         }
@@ -159,7 +161,7 @@ class PebbleWatchManager(private val context: Context) {
         sendDict(dict)
         Log.d(
             TAG,
-            "Frame: routePts=${geometry.routePoints.size} roadBytes=${geometry.estimatedRoadBytes} packedRoadBytes=${roadBytes.size}"
+            "Frame: routePts=${geometry.routePoints.size} roadBytes=${geometry.estimatedRoadBytes} packedRoad=${roadBytes.size}"
         )
         Log.d(
             "PebbleMapsRoads",
@@ -179,7 +181,10 @@ class PebbleWatchManager(private val context: Context) {
         val out = ArrayList<Byte>(segments.sumOf { 1 + (it.points.size * 2) + 2 })
         for (segment in segments) {
             if (segment.points.size < 2) continue
-            out.add(segment.roadClass.wireValue.toByte())
+            var flags = segment.roadClass.wireValue and 0x3F
+            if (segment.isBridge) flags = flags or 0x40
+            if (segment.isTunnel) flags = flags or 0x80
+            out.add(flags.toByte())
             for (point in segment.points) {
                 val (x, y) = packSinglePoint(point, halfViewport)
                 out.add(x.toByte())
@@ -190,6 +195,8 @@ class PebbleWatchManager(private val context: Context) {
         }
         return out.toByteArray()
     }
+
+
 
     private fun packPoints(points: List<ViewportPoint>, halfViewport: Double): ByteArray {
         val bytes = ByteArray(points.size * 2)

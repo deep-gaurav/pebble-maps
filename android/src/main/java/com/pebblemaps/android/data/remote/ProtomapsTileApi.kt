@@ -1,7 +1,9 @@
 package com.pebblemaps.android.data.remote
 
 import android.util.Log
+import com.pebblemaps.android.domain.model.FeatureType
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.domain.model.MapFeature
 import com.pebblemaps.android.domain.model.RoadClass
 import com.pebblemaps.android.domain.model.RoadSegment
 import com.wdtinc.mapbox_vector_tile.adapt.jts.MvtReader
@@ -26,6 +28,11 @@ class ProtomapsTileApi(private val client: HttpClient) {
     private val baseUrl = "https://api.protomaps.com/tiles/v3"
     private val geometryFactory = GeometryFactory()
 
+    data class TileContent(
+        val roads: List<RoadSegment>,
+        val features: List<MapFeature>
+    )
+
     data class TileDebugInfo(
         val z: Int, val x: Int, val y: Int,
         val layerNames: List<String>,
@@ -35,7 +42,7 @@ class ProtomapsTileApi(private val client: HttpClient) {
         val fetchError: String? = null
     )
 
-    suspend fun fetchRoads(center: LatLng, zoom: Int = 15): List<RoadSegment> {
+    suspend fun fetchRoads(center: LatLng, zoom: Int = 15): TileContent {
         val (tileX, tileY) = latLngToTile(center, zoom)
         return fetchRoadsForTile(zoom, tileX, tileY)
     }
@@ -76,7 +83,7 @@ class ProtomapsTileApi(private val client: HttpClient) {
         }
     }
 
-    suspend fun fetchRoadsForTile(z: Int, x: Int, y: Int): List<RoadSegment> {
+    suspend fun fetchRoadsForTile(z: Int, x: Int, y: Int): TileContent {
         val url = "$baseUrl/$z/$x/$y.mvt?key=$apiKey"
         return try {
             val bytes: ByteArray = client.get(url).body()
@@ -84,15 +91,15 @@ class ProtomapsTileApi(private val client: HttpClient) {
             val jtsMvt = MvtReader.loadMvt(inputStream, geometryFactory, TagKeyValueMapConverter())
 
             val segments = mutableListOf<RoadSegment>()
-            val layer: JtsLayer? = jtsMvt.layers.find { it.name == "roads" }
+            val features = mutableListOf<MapFeature>()
+            val roadsLayer: JtsLayer? = jtsMvt.layers.find { it.name == "roads" }
 
             var lineStringCount = 0
             var multiLineStringCount = 0
             var otherGeomCount = 0
             var skippedNonRoad = 0
 
-            layer?.geometries?.forEach { geom ->
-                // Extract line strings from both LineString and MultiLineString geometries
+            roadsLayer?.geometries?.forEach { geom ->
                 val lineStrings: List<LineString> = when (geom) {
                     is LineString -> {
                         lineStringCount++
@@ -110,8 +117,7 @@ class ProtomapsTileApi(private val client: HttpClient) {
 
                 @Suppress("UNCHECKED_CAST")
                 val attributes = geom.userData as? Map<String, Any?> ?: emptyMap()
-                
-                // Filter out non-road features (railways, paths, etc.)
+
                 val kind = attributes["pmap:kind"] as? String
                     ?: attributes["kind"] as? String
                     ?: ""
@@ -121,29 +127,62 @@ class ProtomapsTileApi(private val client: HttpClient) {
                 }
 
                 val roadClass = classifyRoad(attributes)
+                val isBridge = parseBoolAttribute(attributes, "bridge")
+                val isTunnel = parseBoolAttribute(attributes, "tunnel")
 
                 for (line in lineStrings) {
                     val points = line.coordinates.map { coord ->
                         tileToLatLng(coord.x, coord.y, x, y, z)
                     }
                     if (points.size < 2) continue
-                    segments.add(RoadSegment(points = points, roadClass = roadClass))
+                    segments.add(RoadSegment(points = points, roadClass = roadClass, isBridge = isBridge, isTunnel = isTunnel))
                 }
             }
 
-            Log.d("PebbleMapsRoads", "Tile $z/$x/$y: ${segments.size} roads (LS=$lineStringCount MLS=$multiLineStringCount other=$otherGeomCount skippedNonRoad=$skippedNonRoad totalGeoms=${layer?.geometries?.size ?: 0})")
-            if (segments.size < 5 && layer != null) {
-                // Log sample attributes when few roads found, for debugging
-                val sampleAttrs = layer.geometries.take(3).mapNotNull { g ->
+            // Parse features: water, landuse, buildings
+            fun envelopeToBounds(env: org.locationtech.jts.geom.Envelope): List<LatLng> {
+                return listOf(
+                    tileToLatLng(env.minX, env.minY, x, y, z),
+                    tileToLatLng(env.maxX, env.minY, x, y, z),
+                    tileToLatLng(env.maxX, env.maxY, x, y, z),
+                    tileToLatLng(env.minX, env.maxY, x, y, z)
+                )
+            }
+
+            jtsMvt.layers.find { it.name == "water" }?.geometries?.forEach { geom ->
+                val env = geom.envelopeInternal
+                if (!env.isNull) features.add(MapFeature(FeatureType.WATER, envelopeToBounds(env)))
+            }
+
+            jtsMvt.layers.find { it.name == "landuse" }?.geometries?.forEach { geom ->
+                @Suppress("UNCHECKED_CAST")
+                val attributes = geom.userData as? Map<String, Any?> ?: emptyMap()
+                val kind = attributes["pmap:kind"] as? String
+                    ?: attributes["kind"] as? String
+                    ?: ""
+                if (kind in PARK_LANDUSE_KINDS) {
+                    val env = geom.envelopeInternal
+                    if (!env.isNull) features.add(MapFeature(FeatureType.PARK, envelopeToBounds(env)))
+                }
+            }
+
+            jtsMvt.layers.find { it.name == "buildings" }?.geometries?.forEach { geom ->
+                val env = geom.envelopeInternal
+                if (!env.isNull) features.add(MapFeature(FeatureType.BUILDING, envelopeToBounds(env)))
+            }
+
+            Log.d("PebbleMapsRoads", "Tile $z/$x/$y: ${segments.size} roads, ${features.size} features (LS=$lineStringCount MLS=$multiLineStringCount other=$otherGeomCount skippedNonRoad=$skippedNonRoad)")
+            if (segments.size < 5 && roadsLayer != null) {
+                val sampleAttrs = roadsLayer.geometries.take(3).mapNotNull { g ->
                     @Suppress("UNCHECKED_CAST")
                     (g.userData as? Map<String, Any?>)?.entries?.joinToString(", ") { "${it.key}=${it.value}" }
                 }
                 Log.d("PebbleMapsRoads", "  Sample attrs: $sampleAttrs")
             }
-            segments
+            TileContent(roads = segments, features = features)
         } catch (e: Exception) {
             Log.e("PebbleMapsRoads", "Protomaps failed for $z/$x/$y: ${e.javaClass.simpleName}: ${e.message}")
-            emptyList()
+            TileContent(emptyList(), emptyList())
         }
     }
 
@@ -173,6 +212,20 @@ class ProtomapsTileApi(private val client: HttpClient) {
         "pier", "runway", "taxiway", "cable_car",
         "ferry"
     )
+
+    private val PARK_LANDUSE_KINDS = setOf(
+        "park", "forest", "grass", "recreation_ground", "garden", "meadow", "wood"
+    )
+
+    private fun parseBoolAttribute(attributes: Map<String, Any?>, key: String): Boolean {
+        val value = attributes[key] ?: attributes["pmap:$key"]
+        return when (value) {
+            is Boolean -> value
+            is String -> value.equals("true", ignoreCase = true) || value == "yes" || value == "1"
+            is Number -> value.toInt() == 1
+            else -> false
+        }
+    }
 
     private fun classifyRoad(attributes: Map<String, Any?>): RoadClass {
         // Protomaps v4 uses 'kind' for general type and 'kind_detail' for OSM-level detail
