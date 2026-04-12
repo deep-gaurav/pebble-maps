@@ -23,14 +23,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -75,8 +72,8 @@ import com.pebblemaps.android.data.RoadCache
 import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.data.remote.ProtomapsTileApi
 import com.pebblemaps.android.domain.model.LatLng
-import com.pebblemaps.android.domain.model.MockLocationManager
-import com.pebblemaps.android.domain.model.MockLocationState
+import com.pebblemaps.android.domain.model.NavigationLocationState
+import com.pebblemaps.android.domain.model.RealLocationManager
 import com.pebblemaps.android.domain.model.Route
 import com.pebblemaps.android.domain.model.Step
 import com.pebblemaps.android.domain.model.TurnDirection
@@ -89,7 +86,7 @@ import com.pebblemaps.android.util.WatchGeometryPreparer
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
-import org.koin.androidx.compose.get
+import org.koin.compose.koinInject
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -97,77 +94,80 @@ import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import kotlin.math.roundToInt
 
+private const val OFF_ROUTE_THRESHOLD_METERS = 80.0
+private const val MIN_REROUTE_INTERVAL_MS = 10_000L
+
 @Composable
 fun ActiveNavigationScreen(
     onNavigateBack: () -> Unit,
     viewModel: NavigationViewModel = koinViewModel()
 ) {
     val state by viewModel.state.collectAsState()
-    val mockState by MockLocationManager.stateFlow.collectAsState()
-    val pebbleManager: PebbleWatchManager = get()
-    val roadCache: RoadCache = get()
-    val tileApi: ProtomapsTileApi = get()
-    
+    val locationState by RealLocationManager.locationState.collectAsState()
+    val pebbleManager: PebbleWatchManager = koinInject()
+    val roadCache: RoadCache = koinInject()
+    val tileApi: ProtomapsTileApi = koinInject()
+
     var showDebug by remember { mutableStateOf(false) }
-    var speedSlider by remember { mutableFloatStateOf(MockLocationManager.speedKmh.toFloat()) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var currentPreparedGeometry by remember { mutableStateOf<PreparedWatchGeometry?>(null) }
     var currentViewportMeters by remember { mutableFloatStateOf(150f) }
-    
+
+    var consecutiveOffRoute by remember { mutableStateOf(0) }
+    var lastRerouteTime by remember { mutableStateOf(0L) }
+
     val context = LocalContext.current
-    
+
     DisposableEffect(Unit) {
         val activity = context as Activity
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Log.d("NavScreen", "Screen kept on")
-        
+
         onDispose {
             activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             Log.d("NavScreen", "Screen keep released")
         }
     }
-    
+
     LaunchedEffect(state.route) {
         state.route?.let { route ->
             val coordinates = route.geometry.coordinates
-
             roadCache.prefetchEntireRoute(coordinates, 150.0)
-
-            MockLocationManager.setRoute(route)
-            MockLocationManager.start()
+            RealLocationManager.updateRoute(route)
+            RealLocationManager.startNavigation(route, context)
             if (pebbleManager.isPebbleConnected()) {
                 pebbleManager.launchWatchApp()
             }
         }
     }
 
-    LaunchedEffect(mockState) {
-        mockState?.let { mock ->
+    LaunchedEffect(locationState) {
+        locationState?.let { loc ->
             val route = state.route
-            val turnDirection = getCurrentTurnDirection(route, mock.currentStepIndex)
+            val turnDirection = getCurrentTurnDirection(route, loc.currentStepIndex)
             val streetName = route?.legs
                 ?.flatMap { it.steps }
-                ?.getOrNull(mock.currentStepIndex)
+                ?.getOrNull(loc.currentStepIndex)
                 ?.maneuver
                 ?.type
             val viewportMeters = pebbleManager.getEffectiveViewportMeters()
-            roadCache.refreshIfNeeded(mock.currentPosition, mock.smoothedBearing, viewportMeters)
+            roadCache.refreshIfNeeded(loc.currentPosition, loc.smoothedBearing, viewportMeters)
             val nearbyRoads = roadCache.nearbyRoads.value
             val nearbyFeatures = roadCache.nearbyFeatures.value
-            val timeRemainingSeconds = if (mock.currentSpeedKmh > 0.5) {
-                mock.totalRemainingDistance / (mock.currentSpeedKmh / 3.6)
+            val timeRemainingSeconds = if (loc.currentSpeedKmh > 0.5) {
+                loc.totalRemainingDistance / (loc.currentSpeedKmh / 3.6)
             } else 0.0
             if (nearbyRoads.isEmpty()) {
-                Log.w("NavScreen", "No roads available at ${mock.currentPosition}, viewport=${viewportMeters.toInt()}m")
+                Log.w("NavScreen", "No roads available at ${loc.currentPosition}, viewport=${viewportMeters.toInt()}m")
             }
             val frame = WatchFrame(
                 routePoints = route?.geometry?.coordinates ?: emptyList(),
-                currentLocation = mock.currentPosition,
+                currentLocation = loc.currentPosition,
                 turnDirection = turnDirection,
-                distanceToNextTurn = mock.distanceToNextTurn,
-                distanceRemaining = mock.totalRemainingDistance,
+                distanceToNextTurn = loc.distanceToNextTurn,
+                distanceRemaining = loc.totalRemainingDistance,
                 streetName = streetName,
-                bearing = mock.smoothedBearing,
+                bearing = loc.smoothedBearing,
                 viewportMeters = viewportMeters,
                 nearbyRoads = nearbyRoads,
                 nearbyFeatures = nearbyFeatures,
@@ -177,14 +177,27 @@ fun ActiveNavigationScreen(
             currentPreparedGeometry = geometry
             currentViewportMeters = viewportMeters.toFloat()
             pebbleManager.postFrame(frame)
+
+            // Auto-reroute check
+            if (loc.distanceFromRoute > OFF_ROUTE_THRESHOLD_METERS) {
+                consecutiveOffRoute++
+                val now = System.currentTimeMillis()
+                if (consecutiveOffRoute >= 2 && now - lastRerouteTime > MIN_REROUTE_INTERVAL_MS) {
+                    Log.d("NavScreen", "Off route (${loc.distanceFromRoute.toInt()}m), triggering reroute")
+                    lastRerouteTime = now
+                    viewModel.reroute(loc.currentPosition)
+                }
+            } else {
+                consecutiveOffRoute = 0
+            }
         }
     }
 
     LaunchedEffect(Unit) {
         roadCache.nearbyRoads.collect { nearbyRoads ->
-            val mock = MockLocationManager.stateFlow.value
+            val loc = RealLocationManager.locationState.value
             val route = viewModel.state.value.route
-            mock?.let { m ->
+            loc?.let { m ->
                 val turnDirection = getCurrentTurnDirection(route, m.currentStepIndex)
                 val streetName = route?.legs
                     ?.flatMap { it.steps }
@@ -216,18 +229,18 @@ fun ActiveNavigationScreen(
             }
         }
     }
-    
+
     DisposableEffect(Unit) {
         onDispose {
-            MockLocationManager.stop()
+            RealLocationManager.stopNavigation()
             pebbleManager.stopSending()
         }
     }
-    
-    val mock = mockState
+
+    val loc = locationState
     val route = state.route
     var hasInitiallyCentered by remember { mutableStateOf(false) }
-    
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -244,7 +257,7 @@ fun ActiveNavigationScreen(
             },
             update = { view ->
                 view.overlays.clear()
-                
+
                 // Draw route polyline
                 route?.let { r ->
                     val polyline = Polyline()
@@ -253,10 +266,10 @@ fun ActiveNavigationScreen(
                     })
                     view.overlays.add(polyline)
                 }
-                
-                mock?.let { m ->
+
+                loc?.let { m ->
                     val geoPoint = GeoPoint(m.currentPosition.lat, m.currentPosition.lng)
-                    
+
                     // Create directional arrow marker (pointing UP, no rotation in bitmap)
                     val arrowBitmap = createDirectionArrow(0f)
                     val marker = Marker(view)
@@ -264,34 +277,34 @@ fun ActiveNavigationScreen(
                     marker.icon = BitmapDrawable(view.context.resources, arrowBitmap)
                     marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                     view.overlays.add(marker)
-                    
-                    // Center map on mock location and set rotation
+
+                    // Center map on location and set rotation
                     view.controller.setCenter(geoPoint)
                     view.mapOrientation = -m.smoothedBearing
-                    
+
                     // Only set initial zoom once
                     if (!hasInitiallyCentered) {
                         view.controller.setZoom(17.0)
                         hasInitiallyCentered = true
                     }
                 }
-                
+
                 view.invalidate()
             },
             modifier = Modifier.fillMaxSize()
         )
-        
+
         // Top Turn Indicator
         TurnIndicatorPanel(
-            turnDirection = getCurrentTurnDirection(state.route, mock?.currentStepIndex ?: 0),
-            distanceToTurn = mock?.distanceToNextTurn ?: 0.0,
+            turnDirection = getCurrentTurnDirection(state.route, loc?.currentStepIndex ?: 0),
+            distanceToTurn = loc?.distanceToNextTurn ?: 0.0,
             modifier = Modifier.align(Alignment.TopCenter)
         )
-        
+
         // Back button
         IconButton(
             onClick = {
-                MockLocationManager.stop()
+                RealLocationManager.stopNavigation()
                 onNavigateBack()
             },
             modifier = Modifier
@@ -305,12 +318,12 @@ fun ActiveNavigationScreen(
                 tint = ComposeColor.White
             )
         }
-        
+
         // Loading overlay while pre-fetching route
         val isPrefetching by roadCache.isPrefetching.collectAsState()
         val prefetchProgress by roadCache.prefetchProgress.collectAsState()
-        
-        if (isPrefetching) {
+
+        if (isPrefetching || state.isLoading) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -326,45 +339,37 @@ fun ActiveNavigationScreen(
                         modifier = Modifier.size(48.dp)
                     )
                     Text(
-                        text = "Loading map tiles... ${(prefetchProgress * 100).toInt()}%",
+                        text = if (state.isLoading) "Rerouting…" else "Loading map tiles… ${(prefetchProgress * 100).toInt()}%",
                         color = ComposeColor.White,
                         fontSize = 14.sp,
                         modifier = Modifier.padding(top = 16.dp)
                     )
-                    LinearProgressIndicator(
-                        progress = { prefetchProgress },
-                        color = ComposeColor.Cyan,
-                        trackColor = ComposeColor.White.copy(alpha = 0.3f),
-                        modifier = Modifier
-                            .fillMaxWidth(0.6f)
-                            .padding(top = 8.dp)
-                    )
+                    if (!state.isLoading) {
+                        LinearProgressIndicator(
+                            progress = { prefetchProgress },
+                            color = ComposeColor.Cyan,
+                            trackColor = ComposeColor.White.copy(alpha = 0.3f),
+                            modifier = Modifier
+                                .fillMaxWidth(0.6f)
+                                .padding(top = 8.dp)
+                        )
+                    }
                 }
             }
         }
-        
+
         // Bottom Panel
         BottomNavigationPanel(
-            remainingDistance = mock?.totalRemainingDistance ?: 0.0,
-            currentSpeed = mock?.currentSpeedKmh ?: 0.0,
-            isRunning = mock?.isRunning ?: false,
+            remainingDistance = loc?.totalRemainingDistance ?: 0.0,
+            currentSpeed = loc?.currentSpeedKmh ?: 0.0,
             showDebug = showDebug,
-            speedSlider = speedSlider,
             preparedGeometry = currentPreparedGeometry,
             viewportMeters = currentViewportMeters.toDouble(),
             tileApi = tileApi,
             roadCache = roadCache,
-            mockState = mock,
-            onSpeedChange = { newSpeed ->
-                speedSlider = newSpeed
-                MockLocationManager.speedKmh = newSpeed.toDouble()
-            },
-            onPauseResume = {
-                if (mock?.isRunning == true) MockLocationManager.pause()
-                else MockLocationManager.resume()
-            },
+            locationState = loc,
             onStop = {
-                MockLocationManager.stop()
+                RealLocationManager.stopNavigation()
                 onNavigateBack()
             },
             onDebugToggle = { showDebug = !showDebug },
@@ -416,16 +421,12 @@ fun TurnIndicatorPanel(
 fun BottomNavigationPanel(
     remainingDistance: Double,
     currentSpeed: Double,
-    isRunning: Boolean,
     showDebug: Boolean,
-    speedSlider: Float,
     preparedGeometry: PreparedWatchGeometry?,
     viewportMeters: Double,
     tileApi: ProtomapsTileApi,
     roadCache: RoadCache,
-    mockState: MockLocationState?,
-    onSpeedChange: (Float) -> Unit,
-    onPauseResume: () -> Unit,
+    locationState: NavigationLocationState?,
     onStop: () -> Unit,
     onDebugToggle: () -> Unit,
     modifier: Modifier = Modifier
@@ -449,7 +450,7 @@ fun BottomNavigationPanel(
                     tint = ComposeColor.White.copy(alpha = 0.5f)
                 )
             }
-            
+
             // Stats row
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -459,26 +460,14 @@ fun BottomNavigationPanel(
                 StatItem(label = "Speed", value = "${currentSpeed.roundToInt()} km/h")
                 StatItem(label = "Time", value = if (currentSpeed > 0) formatDuration(remainingDistance / (currentSpeed / 3.6)) else "-- min")
             }
-            
+
             // Debug controls (animated visibility)
             AnimatedVisibility(visible = showDebug) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
                     MvtDebugPanel(
                         tileApi = tileApi,
                         roadCache = roadCache,
-                        mockState = mockState,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    
-                    Text(
-                        text = "Mock Speed: ${speedSlider.roundToInt()} km/h",
-                        color = ComposeColor.White,
-                        fontSize = 14.sp
-                    )
-                    Slider(
-                        value = speedSlider,
-                        onValueChange = onSpeedChange,
-                        valueRange = 5f..60f,
+                        locationState = locationState,
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -488,14 +477,6 @@ fun BottomNavigationPanel(
                             .padding(top = 8.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
-                        Button(onClick = onPauseResume) {
-                            Icon(
-                                if (isRunning) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = null
-                            )
-                            Text(if (isRunning) "Pause" else "Resume")
-                        }
-
                         Button(onClick = onStop) {
                             Icon(Icons.Default.Stop, contentDescription = null)
                             Text("Stop")
@@ -594,10 +575,10 @@ private fun createDirectionArrow(bearing: Float): Bitmap {
     val size = 96
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
-    
+
     canvas.save()
     canvas.rotate(bearing, size / 2f, size / 2f)
-    
+
     // Draw outer circle (white background)
     val bgPaint = Paint().apply {
         isAntiAlias = true
@@ -605,28 +586,28 @@ private fun createDirectionArrow(bearing: Float): Bitmap {
         style = Paint.Style.FILL
     }
     canvas.drawCircle(size / 2f, size / 2f, size / 2f - 2f, bgPaint)
-    
+
     // Draw arrow (blue)
     val paint = Paint().apply {
         isAntiAlias = true
         color = android.graphics.Color.parseColor("#1976D2")
         style = Paint.Style.FILL
     }
-    
+
     val path = android.graphics.Path()
     val cx = size / 2f
     val cy = size / 2f
     val arrowSize = size / 2f - 8f
-    
+
     // Arrow pointing up (north)
     path.moveTo(cx, cy - arrowSize)
     path.lineTo(cx - arrowSize * 0.6f, cy + arrowSize * 0.6f)
     path.lineTo(cx, cy + arrowSize * 0.2f)
     path.lineTo(cx + arrowSize * 0.6f, cy + arrowSize * 0.6f)
     path.close()
-    
+
     canvas.drawPath(path, paint)
-    
+
     // Draw white outline
     val outlinePaint = Paint().apply {
         isAntiAlias = true
@@ -635,31 +616,31 @@ private fun createDirectionArrow(bearing: Float): Bitmap {
         strokeWidth = 4f
     }
     canvas.drawPath(path, outlinePaint)
-    
+
     canvas.restore()
-    
+
     return bitmap
 }
 
 private fun getCurrentTurnDirection(route: Route?, stepIndex: Int): TurnDirection {
     if (route == null) return TurnDirection.STRAIGHT
-    
+
     // Collect all steps
     val allSteps = mutableListOf<Step>()
     for (leg in route.legs) {
         allSteps.addAll(leg.steps)
     }
-    
+
     if (allSteps.isEmpty()) return TurnDirection.STRAIGHT
-    
+
     // Show the maneuver for stepIndex + 1 (next upcoming turn)
     // But if we're at the last step, show that one
     val targetIndex = if (stepIndex < allSteps.size - 1) stepIndex + 1 else stepIndex
-    
+
     // Skip "depart" type for the first step
     val startIndex = if (allSteps.isNotEmpty() && allSteps[0].maneuver.type == "depart") 1 else 0
     val actualTarget = targetIndex.coerceAtLeast(startIndex)
-    
+
     if (actualTarget < allSteps.size) {
         val maneuver = allSteps[actualTarget].maneuver
         // Skip "arrive" type
@@ -668,7 +649,7 @@ private fun getCurrentTurnDirection(route: Route?, stepIndex: Int): TurnDirectio
         }
         return maneuver.toTurnDirection()
     }
-    
+
     return TurnDirection.STRAIGHT
 }
 
@@ -698,7 +679,6 @@ private fun WatchDebugCanvas(
         val width = size.width
         val height = size.height
         val centerX = width / 2f
-        val centerY = height / 2f
         val padding = 2f
         val usableWidth = width - 2 * padding
         val usableHeight = height - 2 * padding
@@ -756,10 +736,10 @@ private fun calculateBearing(from: LatLng, to: LatLng): Float {
     val lat1 = Math.toRadians(from.lat)
     val lat2 = Math.toRadians(to.lat)
     val dLng = Math.toRadians(to.lng - from.lng)
-    
+
     val x = sin(dLng) * cos(lat2)
     val y = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng)
-    
+
     var bearing = Math.toDegrees(atan2(x, y)).toFloat()
     bearing = (bearing + 360) % 360
     return bearing
@@ -769,7 +749,7 @@ private fun calculateBearing(from: LatLng, to: LatLng): Float {
 private fun MvtDebugPanel(
     tileApi: ProtomapsTileApi,
     roadCache: RoadCache,
-    mockState: MockLocationState?,
+    locationState: NavigationLocationState?,
     modifier: Modifier = Modifier
 ) {
     var tileInfo by remember { mutableStateOf<ProtomapsTileApi.TileDebugInfo?>(null) }
@@ -910,7 +890,7 @@ private fun MvtDebugPanel(
                 }
             }
 
-            mockState?.let { m ->
+            locationState?.let { m ->
                 val (cx, cy) = latLngToTileCoord(m.currentPosition)
                 Text(
                     text = "Current tile: $cx/$cy (z15)",

@@ -9,6 +9,7 @@ import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.ui.map.MapViewModel
 import com.pebblemaps.android.ui.navigation.NavigationViewModel
 import com.pebblemaps.android.ui.preview.WatchPreviewViewModel
+import com.pebblemaps.android.util.GoogleMapsUrlResolver
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -39,7 +40,8 @@ val appModule = module {
     single<RouteRepository> { RouteRepositoryImpl(get()) }
 
     viewModel { MapViewModel(get()) }
-    single { NavigationViewModel(get()) }
+    single { NavigationViewModel(get(), get()) }
     viewModel { WatchPreviewViewModel() }
     single { PebbleWatchManager(get()) }
+    single { GoogleMapsUrlResolver(get()) }
 }

@@ -2,22 +2,29 @@ package com.pebblemaps.android.ui.map
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Navigation
-import androidx.compose.material.icons.filled.ToggleOn
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -25,9 +32,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
@@ -37,10 +48,7 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 
 @Composable
-fun MapScreen(
-    onNavigateToNavigation: () -> Unit,
-    onNavigateToPreview: () -> Unit
-) {
+fun MapScreen() {
     val context = LocalContext.current
     var hasLocationPermission by remember { mutableStateOf(false) }
 
@@ -66,53 +74,182 @@ fun MapScreen(
         }
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .padding(top = 48.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-        ) {
-            OSMMapView(
-                context = context,
-                hasLocationPermission = hasLocationPermission
-            )
-        }
+        // Background map
+        OSMMapView(
+            context = context,
+            hasLocationPermission = hasLocationPermission,
+            modifier = Modifier.fillMaxSize()
+        )
 
-        Row(
+        // Foreground instructional card
+        Surface(
             modifier = Modifier
+                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(16.dp)
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+            shadowElevation = 8.dp
         ) {
-            Button(
-                onClick = onNavigateToNavigation,
-                modifier = Modifier.weight(1f)
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Icon(Icons.Default.Navigation, contentDescription = null)
-                Text("Navigate", modifier = Modifier.padding(start = 8.dp))
-            }
+                Text(
+                    text = "Pebble Maps",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
 
-            Button(
-                onClick = onNavigateToPreview,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 8.dp)
-            ) {
-                Icon(Icons.Default.ToggleOn, contentDescription = null)
-                Text("Preview", modifier = Modifier.padding(start = 8.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Permission status chip
+                PermissionStatusChip(
+                    granted = hasLocationPermission,
+                    onRequestPermission = {
+                        permissionLauncher.launch(
+                            arrayOf(
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION
+                            )
+                        )
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Text(
+                    text = "How to start navigating:",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                InstructionStep(number = "1", text = "Open Google Maps")
+                InstructionStep(number = "2", text = "Search for a destination and get directions")
+                InstructionStep(number = "3", text = "Tap Share → choose Pebble Maps")
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = { openGoogleMaps(context) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LocationOn,
+                        contentDescription = null,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    Text("Open Google Maps")
+                }
             }
         }
     }
 }
 
 @Composable
+private fun PermissionStatusChip(
+    granted: Boolean,
+    onRequestPermission: () -> Unit
+) {
+    val icon = if (granted) Icons.Default.CheckCircle else Icons.Default.Warning
+    val text = if (granted) "Location permission granted" else "Location permission needed"
+    val containerColor = if (granted) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.errorContainer
+    }
+    val contentColor = if (granted) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onErrorContainer
+    }
+
+    Surface(
+        onClick = { if (!granted) onRequestPermission() },
+        shape = RoundedCornerShape(16.dp),
+        color = containerColor
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = contentColor
+            )
+            Text(
+                text = text,
+                color = contentColor,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun InstructionStep(number: String, text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .background(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(50)
+                )
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = number,
+                color = MaterialTheme.colorScheme.onPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
+        }
+        Text(
+            text = text,
+            modifier = Modifier.padding(start = 12.dp),
+            fontSize = 14.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+private fun openGoogleMaps(context: Context) {
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        `package` = "com.google.android.apps.maps"
+        data = android.net.Uri.parse("geo:0,0?q=")
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+    }
+    if (intent.resolveActivity(context.packageManager) != null) {
+        context.startActivity(intent)
+    } else {
+        // Fallback: open Play Store or generic maps search
+        val fallback = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://maps.google.com"))
+        fallback.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        context.startActivity(fallback)
+    }
+}
+
+@Composable
 fun OSMMapView(
     context: Context,
-    hasLocationPermission: Boolean
+    hasLocationPermission: Boolean,
+    modifier: Modifier = Modifier
 ) {
     AndroidView(
         factory = { ctx ->
@@ -135,6 +272,6 @@ fun OSMMapView(
                 }
             }
         },
-        modifier = Modifier.fillMaxSize()
+        modifier = modifier
     )
 }
