@@ -1,117 +1,167 @@
 package com.pebblemaps.android.data
 
 import android.util.Log
-import com.pebblemaps.android.data.remote.OverpassApi
+import com.pebblemaps.android.data.remote.ProtomapsTileApi
 import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.RoadSegment
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.cos
-import kotlin.math.floor
-import kotlin.math.sin
+import kotlin.math.ln
+import kotlin.math.tan
 
-class RoadCache(private val overpassApi: OverpassApi) {
+class RoadCache(private val tileApi: ProtomapsTileApi) {
 
     companion object {
         private const val TAG = "RoadCache"
-        private const val CELL_SIZE_METERS = 180.0
-        private const val CELL_RADIUS_METERS = 130.0
-        private const val MAX_CACHED_CELLS = 48
-        private const val MIN_FETCH_INTERVAL_MS = 2000L
+        private const val TILE_ZOOM = 15
+        private const val MAX_CACHED_TILES = 128
+        private const val MIN_FETCH_INTERVAL_MS = 500L
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private val cellCache = linkedMapOf<CellKey, CachedCell>()
-    private val refreshingCells = mutableSetOf<CellKey>()
-    private val lastFetchTime = mutableMapOf<CellKey, Long>()
-    
+    private val tileCache = linkedMapOf<TileKey, CachedTile>()
+    private val refreshingTiles = mutableSetOf<TileKey>()
+    private val lastFetchTime = mutableMapOf<TileKey, Long>()
+
     private val _prefetchProgress = MutableStateFlow(0f)
     val prefetchProgress: StateFlow<Float> = _prefetchProgress.asStateFlow()
-    
+
     private val _isPrefetching = MutableStateFlow(false)
     val isPrefetching: StateFlow<Boolean> = _isPrefetching.asStateFlow()
 
+    private val latestDesiredKeys = AtomicReference<Set<TileKey>>(emptySet())
+    private val _nearbyRoads = MutableStateFlow<List<RoadSegment>>(emptyList())
+    val nearbyRoads: StateFlow<List<RoadSegment>> = _nearbyRoads.asStateFlow()
+
+    private val _tileDebugInfo = MutableStateFlow<List<TileDebugInfo>>(emptyList())
+    val tileDebugInfo: StateFlow<List<TileDebugInfo>> = _tileDebugInfo.asStateFlow()
+
+    data class TileDebugInfo(
+        val z: Int,
+        val x: Int,
+        val y: Int,
+        val status: TileStatus,
+        val roadCount: Int = 0,
+        val layerNames: List<String> = emptyList()
+    ) {
+        override fun toString() = "$z/$x/$y"
+    }
+
+    enum class TileStatus { CACHED, FETCHING, MISSING }
+
     fun getRoads(location: LatLng, bearing: Float, viewportMeters: Double): List<RoadSegment> {
-        val keys = desiredCells(location, bearing, viewportMeters)
-        return keys
+        val keys = desiredTiles(location, bearing, viewportMeters)
+        val keySet = keys.toSet()
+        latestDesiredKeys.set(keySet)
+        trimCache(keySet)
+        val roads = keys
             .asSequence()
-            .mapNotNull { cellCache[it]?.roads }
+            .mapNotNull { tileCache[it]?.roads }
             .flatten()
             .distinctBy { roadSignature(it) }
             .toList()
+        _nearbyRoads.value = roads
+        return roads
     }
 
     fun refreshIfNeeded(location: LatLng, bearing: Float, viewportMeters: Double) {
+        val keys = desiredTiles(location, bearing, viewportMeters)
+        val keySet = keys.toSet()
+        latestDesiredKeys.set(keySet)
+        trimCache(keySet)
+        updateTileDebugInfo(keys)
+        val missingCount = keys.count { tileCache[it] == null }
+        Log.d("PebbleMapsRoads", "refreshIfNeeded: ${keys.size} desired tiles, $missingCount missing")
+        if (missingCount == 0) {
+            recomputeNearbyRoads()
+        }
         val now = System.currentTimeMillis()
-        desiredCells(location, bearing, viewportMeters).forEach { key ->
-            if (cellCache[key] != null) return@forEach
-            
+        keys.forEach { key ->
+            if (tileCache[key] != null) return@forEach
+
             val lastFetch = lastFetchTime[key]
             if (lastFetch != null && now - lastFetch < MIN_FETCH_INTERVAL_MS) return@forEach
-            
-            if (!refreshingCells.add(key)) return@forEach
+
+            if (!refreshingTiles.add(key)) return@forEach
 
             scope.launch {
                 try {
-                    val center = cellCenter(key, location.lat)
                     val roads = withContext(Dispatchers.IO) {
-                        overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
+                        tileApi.fetchRoadsForTile(key.z, key.x, key.y)
                     }
-                    cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    tileCache[key] = CachedTile(roads = roads, fetchedAtMs = System.currentTimeMillis())
                     lastFetchTime[key] = now
-                    trimCache(keysToKeep = desiredCells(location, bearing, viewportMeters).toSet())
-                    Log.d(TAG, "Fetched ${roads.size} roads for cell=$key")
+                    recomputeNearbyRoads()
+                    Log.d("PebbleMapsRoads", "Tile fetched $key: ${roads.size} roads")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to fetch roads for $key: ${e.message}")
+                    Log.e(TAG, "Failed to fetch tile $key: ${e.message}")
                 } finally {
-                    refreshingCells.remove(key)
+                    refreshingTiles.remove(key)
                 }
             }
         }
     }
 
+    private fun updateTileDebugInfo(keys: List<TileKey>) {
+        val info = keys.map { key ->
+            val status = when {
+                tileCache[key] != null -> TileStatus.CACHED
+                refreshingTiles.contains(key) -> TileStatus.FETCHING
+                else -> TileStatus.MISSING
+            }
+            val roadCount = tileCache[key]?.roads?.size ?: 0
+            TileDebugInfo(key.z, key.x, key.y, status, roadCount)
+        }
+        _tileDebugInfo.value = info
+    }
+
     suspend fun refreshIfNeededAndWait(location: LatLng, bearing: Float, viewportMeters: Double) {
+        val keys = desiredTiles(location, bearing, viewportMeters)
+        val keySet = keys.toSet()
+        latestDesiredKeys.set(keySet)
+        trimCache(keySet)
         val now = System.currentTimeMillis()
-        val keys = desiredCells(location, bearing, viewportMeters)
-        
         val jobs = mutableListOf<Job>()
-        
+
         keys.forEach { key ->
-            if (cellCache[key] != null) return@forEach
-            if (!refreshingCells.add(key)) return@forEach
-            
+            if (tileCache[key] != null) return@forEach
+            if (!refreshingTiles.add(key)) return@forEach
+
             val job = scope.launch {
                 try {
-                    val center = cellCenter(key, location.lat)
                     val roads = withContext(Dispatchers.IO) {
-                        overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
+                        tileApi.fetchRoadsForTile(key.z, key.x, key.y)
                     }
-                    cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                    tileCache[key] = CachedTile(roads = roads, fetchedAtMs = System.currentTimeMillis())
                     lastFetchTime[key] = now
-                    Log.d(TAG, "Pre-cached ${roads.size} roads for cell=$key")
+                    Log.d(TAG, "Pre-cached ${roads.size} roads for tile=$key")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to pre-cache roads for $key: ${e.message}")
+                    Log.e(TAG, "Failed to pre-cache tile $key: ${e.message}")
                 } finally {
-                    refreshingCells.remove(key)
+                    refreshingTiles.remove(key)
                 }
             }
             jobs.add(job)
         }
-        
-        trimCache(keys.toSet())
-        
+
         if (jobs.isNotEmpty()) {
-            Log.d(TAG, "Waiting for ${jobs.size} cell fetches to complete...")
+            Log.d(TAG, "Waiting for ${jobs.size} tile fetches to complete...")
             jobs.forEach { it.join() }
+            recomputeNearbyRoads()
             Log.d(TAG, "All pre-cache fetches complete")
         }
     }
@@ -121,132 +171,113 @@ class RoadCache(private val overpassApi: OverpassApi) {
             Log.d(TAG, "Prefetch skipped: empty coordinates")
             return
         }
-        
-        val allKeys = mutableSetOf<CellKey>()
+
+        val allKeys = mutableSetOf<TileKey>()
         val step = maxOf(1, coordinates.size / 20)
         for (i in coordinates.indices step step) {
             val location = coordinates[i]
-            allKeys.addAll(desiredCells(location, 0f, viewportMeters))
+            allKeys.addAll(desiredTiles(location, 0f, viewportMeters))
         }
-        
+
         val keysList = allKeys.toList()
         if (keysList.isEmpty()) {
-            Log.d(TAG, "Prefetch skipped: no cells needed")
+            Log.d(TAG, "Prefetch skipped: no tiles needed")
             return
         }
-        
-        Log.d(TAG, "Prefetch starting: ${keysList.size} cells")
+
+        Log.d(TAG, "Prefetch starting: ${keysList.size} tiles")
         _isPrefetching.value = true
         _prefetchProgress.value = 0f
-        
+
         val now = System.currentTimeMillis()
         val completed = AtomicInteger(0)
         val jobs = mutableListOf<Job>()
-        
+        val semaphore = Semaphore(3)
+
         keysList.forEach { key ->
-            if (cellCache[key] != null) {
+            if (tileCache[key] != null) {
                 completed.incrementAndGet()
                 return@forEach
             }
-            if (!refreshingCells.add(key)) {
+            if (!refreshingTiles.add(key)) {
                 completed.incrementAndGet()
                 return@forEach
             }
-            
+
             jobs.add(scope.launch {
-                try {
-                    val center = cellCenter(key, coordinates.first().lat)
-                    val roads = withContext(Dispatchers.IO) {
-                        overpassApi.fetchRoads(center, CELL_RADIUS_METERS)
+                semaphore.withPermit {
+                    try {
+                        val roads = withContext(Dispatchers.IO) {
+                            tileApi.fetchRoadsForTile(key.z, key.x, key.y)
+                        }
+                        tileCache[key] = CachedTile(roads = roads, fetchedAtMs = System.currentTimeMillis())
+                        lastFetchTime[key] = now
+                        Log.d(TAG, "Route pre-fetch: ${roads.size} roads for tile=$key")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Route pre-fetch failed for $key: ${e.message}")
+                    } finally {
+                        refreshingTiles.remove(key)
+                        completed.incrementAndGet()
                     }
-                    cellCache[key] = CachedCell(roads = roads, fetchedAtMs = System.currentTimeMillis())
-                    lastFetchTime[key] = now
-                    Log.d(TAG, "Route pre-fetch: ${roads.size} roads for cell=$key")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Route pre-fetch failed for $key: ${e.message}")
-                } finally {
-                    refreshingCells.remove(key)
-                    completed.incrementAndGet()
                 }
             })
+            delay(50)
         }
-        
+
         jobs.forEach { it.join() }
+        recomputeNearbyRoads()
         _prefetchProgress.value = 1f
         _isPrefetching.value = false
-        Log.d(TAG, "Route pre-fetch complete: ${keysList.size} cells, ${jobs.size} fetched")
+        val alreadyCached = keysList.size - jobs.size
+        Log.d("PebbleMapsRoads", "Prefetch complete: ${keysList.size} tiles total, ${jobs.size} fetched, $alreadyCached already cached")
+        Log.d(TAG, "Route pre-fetch complete: ${keysList.size} tiles, ${jobs.size} fetched")
     }
 
-    private fun trimCache(keysToKeep: Set<CellKey>) {
-        if (cellCache.size <= MAX_CACHED_CELLS) return
+    private fun trimCache(keysToKeep: Set<TileKey>) {
+        if (tileCache.size <= MAX_CACHED_TILES) return
 
-        val removable = cellCache.keys
+        val removable = tileCache.keys
             .filterNot { it in keysToKeep }
-            .sortedBy { cellCache[it]?.fetchedAtMs ?: Long.MAX_VALUE }
+            .sortedBy { tileCache[it]?.fetchedAtMs ?: Long.MAX_VALUE }
 
         var idx = 0
-        while (cellCache.size > MAX_CACHED_CELLS && idx < removable.size) {
-            cellCache.remove(removable[idx])
+        while (tileCache.size > MAX_CACHED_TILES && idx < removable.size) {
+            tileCache.remove(removable[idx])
             idx++
         }
     }
 
-    private fun desiredCells(location: LatLng, bearing: Float, viewportMeters: Double): List<CellKey> {
-        val centerKey = cellKey(location)
-        val forwardOffset = offset(location, bearing, viewportMeters * 0.75)
-        val forwardKey = cellKey(forwardOffset)
-        val lateralLeft = offset(location, bearing - 90f, viewportMeters * 0.45)
-        val lateralRight = offset(location, bearing + 90f, viewportMeters * 0.45)
+    private fun recomputeNearbyRoads() {
+        val keys = latestDesiredKeys.get()
+        val roads = keys
+            .asSequence()
+            .mapNotNull { tileCache[it]?.roads }
+            .flatten()
+            .distinctBy { roadSignature(it) }
+            .toList()
+        Log.d("PebbleMapsRoads", "Recomputed roads: ${roads.size} segments from ${keys.size} tiles")
+        _nearbyRoads.value = roads
+        updateTileDebugInfo(keys.toList())
+    }
 
-        return linkedSetOf<CellKey>().apply {
-            add(centerKey)
-            addAll(neighborCells(centerKey))
-            add(forwardKey)
-            addAll(neighborCells(forwardKey, radius = 1))
-            add(cellKey(lateralLeft))
-            add(cellKey(lateralRight))
+    private fun desiredTiles(location: LatLng, bearing: Float, viewportMeters: Double): List<TileKey> {
+        val zoom = TILE_ZOOM
+        val (cx, cy) = latLngToTile(location, zoom)
+        return linkedSetOf<TileKey>().apply {
+            for (dx in -1..1) {
+                for (dy in -1..1) {
+                    add(TileKey(zoom, cx + dx, cy + dy))
+                }
+            }
         }.toList()
     }
 
-    private fun neighborCells(center: CellKey, radius: Int = 1): List<CellKey> {
-        val cells = mutableListOf<CellKey>()
-        for (dx in -radius..radius) {
-            for (dy in -radius..radius) {
-                cells += CellKey(center.x + dx, center.y + dy)
-            }
-        }
-        return cells
-    }
-
-    private fun cellKey(location: LatLng): CellKey {
-        val latMeters = location.lat * 111320.0
-        val lngMeters = location.lng * metersPerLng(location.lat)
-        return CellKey(
-            x = floor(lngMeters / CELL_SIZE_METERS).toInt(),
-            y = floor(latMeters / CELL_SIZE_METERS).toInt()
-        )
-    }
-
-    private fun cellCenter(key: CellKey, referenceLat: Double): LatLng {
-        val latMeters = (key.y + 0.5) * CELL_SIZE_METERS
-        val lngMeters = (key.x + 0.5) * CELL_SIZE_METERS
-        val lat = latMeters / 111320.0
-        val lng = lngMeters / metersPerLng(referenceLat)
-        return LatLng(lat, lng)
-    }
-
-    private fun offset(origin: LatLng, bearingDegrees: Float, distanceMeters: Double): LatLng {
-        val radians = Math.toRadians(bearingDegrees.toDouble())
-        val north = cos(radians) * distanceMeters
-        val east = sin(radians) * distanceMeters
-        return LatLng(
-            lat = origin.lat + north / 111320.0,
-            lng = origin.lng + east / metersPerLng(origin.lat)
-        )
-    }
-
-    private fun metersPerLng(lat: Double): Double {
-        return 111320.0 * cos(Math.toRadians(lat)).coerceAtLeast(0.01)
+    private fun latLngToTile(latLng: LatLng, zoom: Int): Pair<Int, Int> {
+        val n = 1 shl zoom
+        val x = ((latLng.lng + 180.0) / 360.0 * n).toInt()
+        val latRad = Math.toRadians(latLng.lat)
+        val y = ((1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / Math.PI) / 2.0 * n).toInt()
+        return x to y
     }
 
     private fun roadSignature(road: RoadSegment): String {
@@ -267,9 +298,11 @@ class RoadCache(private val overpassApi: OverpassApi) {
         }
     }
 
-    private data class CellKey(val x: Int, val y: Int)
+    private data class TileKey(val z: Int, val x: Int, val y: Int) {
+        override fun toString() = "$z/$x/$y"
+    }
 
-    private data class CachedCell(
+    private data class CachedTile(
         val roads: List<RoadSegment>,
         val fetchedAtMs: Long
     )

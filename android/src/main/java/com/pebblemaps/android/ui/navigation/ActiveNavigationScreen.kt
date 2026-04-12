@@ -10,6 +10,7 @@ import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,14 +18,18 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
@@ -33,9 +38,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -55,6 +62,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -64,8 +73,10 @@ import kotlin.math.cos
 import kotlin.math.sin
 import com.pebblemaps.android.data.RoadCache
 import com.pebblemaps.android.data.pebble.PebbleWatchManager
+import com.pebblemaps.android.data.remote.ProtomapsTileApi
 import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.MockLocationManager
+import com.pebblemaps.android.domain.model.MockLocationState
 import com.pebblemaps.android.domain.model.Route
 import com.pebblemaps.android.domain.model.Step
 import com.pebblemaps.android.domain.model.TurnDirection
@@ -75,6 +86,8 @@ import com.pebblemaps.android.domain.model.toDescription
 import com.pebblemaps.android.domain.model.toTurnDirection
 import com.pebblemaps.android.util.PreparedWatchGeometry
 import com.pebblemaps.android.util.WatchGeometryPreparer
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.androidx.compose.get
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -93,6 +106,7 @@ fun ActiveNavigationScreen(
     val mockState by MockLocationManager.stateFlow.collectAsState()
     val pebbleManager: PebbleWatchManager = get()
     val roadCache: RoadCache = get()
+    val tileApi: ProtomapsTileApi = get()
     
     var showDebug by remember { mutableStateOf(false) }
     var speedSlider by remember { mutableFloatStateOf(MockLocationManager.speedKmh.toFloat()) }
@@ -113,12 +127,12 @@ fun ActiveNavigationScreen(
         }
     }
     
-    LaunchedEffect(Unit) {
+    LaunchedEffect(state.route) {
         state.route?.let { route ->
             val coordinates = route.geometry.coordinates
-            
+
             roadCache.prefetchEntireRoute(coordinates, 150.0)
-            
+
             MockLocationManager.setRoute(route)
             MockLocationManager.start()
             if (pebbleManager.isPebbleConnected()) {
@@ -126,7 +140,7 @@ fun ActiveNavigationScreen(
             }
         }
     }
-    
+
     LaunchedEffect(mockState) {
         mockState?.let { mock ->
             val route = state.route
@@ -138,7 +152,7 @@ fun ActiveNavigationScreen(
                 ?.type
             val viewportMeters = pebbleManager.getEffectiveViewportMeters()
             roadCache.refreshIfNeeded(mock.currentPosition, mock.smoothedBearing, viewportMeters)
-            val nearbyRoads = roadCache.getRoads(mock.currentPosition, mock.smoothedBearing, viewportMeters)
+            val nearbyRoads = roadCache.nearbyRoads.value
             if (nearbyRoads.isEmpty()) {
                 Log.w("NavScreen", "No roads available at ${mock.currentPosition}, viewport=${viewportMeters.toInt()}m")
             }
@@ -157,6 +171,37 @@ fun ActiveNavigationScreen(
             currentPreparedGeometry = geometry
             currentViewportMeters = viewportMeters.toFloat()
             pebbleManager.postFrame(frame)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        roadCache.nearbyRoads.collect { nearbyRoads ->
+            val mock = MockLocationManager.stateFlow.value
+            val route = viewModel.state.value.route
+            mock?.let { m ->
+                val turnDirection = getCurrentTurnDirection(route, m.currentStepIndex)
+                val streetName = route?.legs
+                    ?.flatMap { it.steps }
+                    ?.getOrNull(m.currentStepIndex)
+                    ?.maneuver
+                    ?.type
+                val viewportMeters = pebbleManager.getEffectiveViewportMeters()
+                val frame = WatchFrame(
+                    routePoints = route?.geometry?.coordinates ?: emptyList(),
+                    currentLocation = m.currentPosition,
+                    turnDirection = turnDirection,
+                    distanceToNextTurn = m.distanceToNextTurn,
+                    distanceRemaining = m.totalRemainingDistance,
+                    streetName = streetName,
+                    bearing = m.smoothedBearing,
+                    viewportMeters = viewportMeters,
+                    nearbyRoads = nearbyRoads
+                )
+                val geometry = WatchGeometryPreparer.prepare(frame)
+                currentPreparedGeometry = geometry
+                currentViewportMeters = viewportMeters.toFloat()
+                pebbleManager.postFrame(frame)
+            }
         }
     }
     
@@ -269,7 +314,7 @@ fun ActiveNavigationScreen(
                         modifier = Modifier.size(48.dp)
                     )
                     Text(
-                        text = "Loading roads... ${(prefetchProgress * 100).toInt()}%",
+                        text = "Loading map tiles... ${(prefetchProgress * 100).toInt()}%",
                         color = ComposeColor.White,
                         fontSize = 14.sp,
                         modifier = Modifier.padding(top = 16.dp)
@@ -295,6 +340,9 @@ fun ActiveNavigationScreen(
             speedSlider = speedSlider,
             preparedGeometry = currentPreparedGeometry,
             viewportMeters = currentViewportMeters.toDouble(),
+            tileApi = tileApi,
+            roadCache = roadCache,
+            mockState = mock,
             onSpeedChange = { newSpeed ->
                 speedSlider = newSpeed
                 MockLocationManager.speedKmh = newSpeed.toDouble()
@@ -361,6 +409,9 @@ fun BottomNavigationPanel(
     speedSlider: Float,
     preparedGeometry: PreparedWatchGeometry?,
     viewportMeters: Double,
+    tileApi: ProtomapsTileApi,
+    roadCache: RoadCache,
+    mockState: MockLocationState?,
     onSpeedChange: (Float) -> Unit,
     onPauseResume: () -> Unit,
     onStop: () -> Unit,
@@ -400,6 +451,13 @@ fun BottomNavigationPanel(
             // Debug controls (animated visibility)
             AnimatedVisibility(visible = showDebug) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
+                    MvtDebugPanel(
+                        tileApi = tileApi,
+                        roadCache = roadCache,
+                        mockState = mockState,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    
                     Text(
                         text = "Mock Speed: ${speedSlider.roundToInt()} km/h",
                         color = ComposeColor.White,
@@ -693,4 +751,171 @@ private fun calculateBearing(from: LatLng, to: LatLng): Float {
     var bearing = Math.toDegrees(atan2(x, y)).toFloat()
     bearing = (bearing + 360) % 360
     return bearing
+}
+
+@Composable
+private fun MvtDebugPanel(
+    tileApi: ProtomapsTileApi,
+    roadCache: RoadCache,
+    mockState: MockLocationState?,
+    modifier: Modifier = Modifier
+) {
+    var tileInfo by remember { mutableStateOf<ProtomapsTileApi.TileDebugInfo?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    var manualZ by remember { mutableStateOf("15") }
+    var manualX by remember { mutableStateOf("") }
+    var manualY by remember { mutableStateOf("") }
+
+    val tileDebugInfo by roadCache.tileDebugInfo.collectAsState()
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(8.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = ComposeColor(0xFF1A1A1A)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "MVT Tile Debug",
+                color = ComposeColor.Cyan,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        text = "Current Tiles (${tileDebugInfo.size}):",
+                        color = ComposeColor.White,
+                        fontSize = 10.sp
+                    )
+                    tileDebugInfo.forEach { info ->
+                        Text(
+                            text = "${info.z}/${info.x}/${info.y} ${info.status.name} roads=${info.roadCount}",
+                            color = when (info.status) {
+                                RoadCache.TileStatus.CACHED -> ComposeColor.Green
+                                RoadCache.TileStatus.FETCHING -> ComposeColor.Yellow
+                                RoadCache.TileStatus.MISSING -> ComposeColor.Red
+                            },
+                            fontSize = 9.sp
+                        )
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "Manual Query:",
+                        color = ComposeColor.White,
+                        fontSize = 10.sp
+                    )
+                    Row {
+                        OutlinedTextField(
+                            value = manualZ,
+                            onValueChange = { manualZ = it },
+                            modifier = Modifier.width(48.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = ComposeColor.White, fontSize = 10.sp),
+                            singleLine = true
+                        )
+                        Text("-", color = ComposeColor.White, fontSize = 10.sp)
+                        OutlinedTextField(
+                            value = manualX,
+                            onValueChange = { manualX = it },
+                            modifier = Modifier.width(58.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = ComposeColor.White, fontSize = 10.sp),
+                            singleLine = true
+                        )
+                        Text("-", color = ComposeColor.White, fontSize = 10.sp)
+                        OutlinedTextField(
+                            value = manualY,
+                            onValueChange = { manualY = it },
+                            modifier = Modifier.width(58.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = ComposeColor.White, fontSize = 10.sp),
+                            singleLine = true
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            val z = manualZ.toIntOrNull() ?: 15
+                            val x = manualX.toIntOrNull()
+                            val y = manualY.toIntOrNull()
+                            if (x != null && y != null) {
+                                isLoading = true
+                                kotlinx.coroutines.GlobalScope.launch {
+                                    tileInfo = tileApi.fetchDebugTileInfo(z, x, y)
+                                    isLoading = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, tint = ComposeColor.Cyan, modifier = Modifier.size(14.dp))
+                        Text("Fetch", color = ComposeColor.Cyan, fontSize = 10.sp)
+                    }
+                }
+            }
+
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = ComposeColor.Cyan)
+            }
+
+            tileInfo?.let { info ->
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    Text(
+                        text = "Tile ${info.z}/${info.x}/${info.y}:",
+                        color = ComposeColor.Yellow,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (info.fetchError != null) {
+                        Text(
+                            text = "ERROR: ${info.fetchError}",
+                            color = ComposeColor.Red,
+                            fontSize = 10.sp
+                        )
+                    } else {
+                        Text(
+                            text = "Layers: ${info.layerNames.joinToString(", ")}",
+                            color = ComposeColor.White,
+                            fontSize = 9.sp
+                        )
+                        Text(
+                            text = "Features: ${info.featureCountByLayer.entries.joinToString(", ") { "${it.key}=${it.value}" }}",
+                            color = ComposeColor.White,
+                            fontSize = 9.sp
+                        )
+                        Text(
+                            text = "Roads: ${info.roadCount}, Highway tags: ${info.highwayTagValues.take(10).joinToString(", ")}",
+                            color = ComposeColor.Green,
+                            fontSize = 9.sp
+                        )
+                    }
+                }
+            }
+
+            mockState?.let { m ->
+                val (cx, cy) = latLngToTileCoord(m.currentPosition)
+                Text(
+                    text = "Current tile: $cx/$cy (z15)",
+                    color = ComposeColor.Gray,
+                    fontSize = 9.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+private fun latLngToTileCoord(latLng: LatLng): Pair<Int, Int> {
+    val zoom = 15
+    val n = 1 shl zoom
+    val x = ((latLng.lng + 180.0) / 360.0 * n).toInt()
+    val latRad = Math.toRadians(latLng.lat)
+    val y = ((1.0 - kotlin.math.ln(kotlin.math.tan(latRad) + 1.0 / kotlin.math.cos(latRad)) / Math.PI) / 2.0 * n).toInt()
+    return x to y
 }

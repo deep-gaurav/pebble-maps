@@ -5,6 +5,7 @@ import com.pebblemaps.android.domain.model.RoadClass
 import com.pebblemaps.android.domain.model.RoadSegment
 import com.pebblemaps.android.domain.model.TurnDirection
 import com.pebblemaps.android.domain.model.WatchFrame
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
@@ -64,6 +65,26 @@ class WatchGeometryPreparerTest {
                 abs(it.yMeters) <= frame.viewportMeters / 2.0 * 1.12 + 0.5
         })
         assertTrue(prepared.estimatedRoadBytes > 0)
+    }
+
+    @Test
+    fun roadByteEstimateMatchesWireFormat() {
+        val frame = baseFrame(
+            routePoints = listOf(offsetMeters(-20.0, 0.0), offsetMeters(70.0, 0.0)),
+            nearbyRoads = listOf(
+                roadSegment(RoadClass.STANDARD, offsetMeters(-160.0, 25.0), offsetMeters(160.0, 25.0)),
+                roadSegment(RoadClass.MINOR, offsetMeters(-140.0, -30.0), offsetMeters(140.0, -30.0))
+            )
+        )
+        val prepared = WatchGeometryPreparer.prepare(frame)
+
+        // Mimic PebbleWatchManager.packRoadSegments byte counting
+        val wireBytes = prepared.roadSegments.sumOf { segment ->
+            if (segment.points.size < 2) 0 else 1 + (segment.points.size * 2) + 2
+        }
+
+        assertEquals(wireBytes, prepared.estimatedRoadBytes)
+        assertTrue(prepared.estimatedRoadBytes <= 700)
     }
 
     @Test

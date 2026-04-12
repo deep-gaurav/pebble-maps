@@ -2,7 +2,7 @@
 #include <math.h>
 
 #define MAX_POINTS 60
-#define MAX_ROAD_DATA 360
+#define MAX_ROAD_DATA 700
 #define MESSAGE_KEY_ZOOM 22
 #define MESSAGE_KEY_SCREEN_WIDTH 10
 #define MESSAGE_KEY_SCREEN_HEIGHT 11
@@ -184,7 +184,11 @@ static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_c
     .rotation = 0,
     .offset = GPointZero,
   };
+#ifdef PBL_COLOR
   graphics_context_set_fill_color(ctx, GColorCyan);
+#else
+  graphics_context_set_fill_color(ctx, GColorBlack);
+#endif
   gpath_draw_filled(ctx, &path);
 }
 

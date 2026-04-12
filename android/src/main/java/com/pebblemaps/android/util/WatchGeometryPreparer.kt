@@ -1,5 +1,6 @@
 package com.pebblemaps.android.util
 
+import android.util.Log
 import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.RoadClass
 import com.pebblemaps.android.domain.model.RoadSegment
@@ -34,7 +35,7 @@ object WatchGeometryPreparer {
     private const val ROUTE_MARGIN_FACTOR = 0.2
     private const val ROAD_MARGIN_FACTOR = 0.12
     private const val ROUTE_CORRIDOR_METERS = 42.0
-    private const val ROAD_MAX_BYTES = 320
+    private const val ROAD_MAX_BYTES = 700
 
     fun prepare(frame: WatchFrame): PreparedWatchGeometry {
         val basis = ProjectionBasis(frame.currentLocation, frame.bearing)
@@ -96,42 +97,60 @@ object WatchGeometryPreparer {
         halfViewport: Double,
         routePoints: List<ViewportPoint>
     ): List<PreparedRoadSegment> {
-        if (roads.isEmpty()) return emptyList()
+        if (roads.isEmpty()) {
+            Log.d("RoadPrepare", "prepareRoads: input is EMPTY")
+            return emptyList()
+        }
+
+        var tooFewPoints = 0
+        var clippedOut = 0
+        var simplifiedOut = 0
 
         val prepared = roads.mapNotNull { segment ->
-            if (segment.points.size < 2) return@mapNotNull null
+            if (segment.points.size < 2) { tooFewPoints++; return@mapNotNull null }
             val projected = segment.points.map { basis.project(it) }
             val clipped = clipPolyline(projected, halfViewport * (1.0 + ROAD_MARGIN_FACTOR))
-            if (clipped.size < 2) return@mapNotNull null
+            if (clipped.size < 2) { clippedOut++; return@mapNotNull null }
 
             val simplified = PathSimplifier.simplifyViewport(
                 clipped,
-                max(halfViewport / 36.0, 1.5)
+                max(halfViewport / 32.0, 1.5)
             )
-            if (simplified.size < 2) return@mapNotNull null
+            if (simplified.size < 2) { simplifiedOut++; return@mapNotNull null }
             val minToOrigin = minDistanceToOrigin(simplified)
             val minToRoute = minDistanceToPolyline(simplified, routePoints)
-            val score = minToOrigin + minToRoute * 0.65
+            val classBonus = when (segment.roadClass) {
+                RoadClass.MAJOR -> -30.0
+                RoadClass.MEDIUM -> -20.0
+                RoadClass.STANDARD -> -10.0
+                RoadClass.MINOR -> 0.0
+            }
+            val score = minToOrigin + minToRoute * 0.4
             val corridorBonus = if (minToRoute <= ROUTE_CORRIDOR_METERS) -20.0 else 0.0
             RankedRoadSegment(
                 points = simplified,
                 roadClass = segment.roadClass,
-                sortScore = score + corridorBonus
+                sortScore = score + corridorBonus + classBonus
             )
         }
 
         var usedBytes = 0
-        return prepared
-            .sortedBy { it.sortScore }
+        var budgetDropped = 0
+        val result = prepared
+            .sortedWith(compareByDescending<RankedRoadSegment> { it.roadClass.ordinal }.thenBy { it.sortScore })
             .mapNotNull { segment ->
                 val segmentBytes = 1 + (segment.points.size * 2) + 2
                 if (usedBytes + segmentBytes > ROAD_MAX_BYTES) {
+                    budgetDropped++
                     null
                 } else {
                     usedBytes += segmentBytes
                     PreparedRoadSegment(segment.points, segment.roadClass)
                 }
             }
+
+        Log.d("RoadPrepare", "prepareRoads: input=${roads.size} tooFew=$tooFewPoints clippedOut=$clippedOut simplifiedOut=$simplifiedOut ranked=${prepared.size} budgetDropped=$budgetDropped final=${result.size} bytes=$usedBytes halfVP=${halfViewport.toInt()}m")
+        return result
     }
 
     private fun insertAnchor(

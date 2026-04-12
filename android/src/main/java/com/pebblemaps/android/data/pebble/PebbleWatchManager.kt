@@ -159,6 +159,10 @@ class PebbleWatchManager(private val context: Context) {
             TAG,
             "Frame: routePts=${geometry.routePoints.size} roadBytes=${geometry.estimatedRoadBytes} packedRoadBytes=${roadBytes.size}"
         )
+        Log.d(
+            "PebbleMapsRoads",
+            "sendFrame: raw=${frame.nearbyRoads.size} prepared=${geometry.roadSegments.size} packed=${roadBytes.size} route=${geometry.routePoints.size} turn=${frame.turnDirection}"
+        )
     }
 
     private fun sendDict(dict: PebbleDictionary) {

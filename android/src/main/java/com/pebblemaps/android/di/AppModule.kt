@@ -2,7 +2,7 @@ package com.pebblemaps.android.di
 
 import com.pebblemaps.android.data.RoadCache
 import com.pebblemaps.android.data.remote.OsrmApi
-import com.pebblemaps.android.data.remote.OverpassApi
+import com.pebblemaps.android.data.remote.ProtomapsTileApi
 import com.pebblemaps.android.data.repository.RouteRepository
 import com.pebblemaps.android.data.repository.RouteRepositoryImpl
 import com.pebblemaps.android.data.pebble.PebbleWatchManager
@@ -34,7 +34,7 @@ val appModule = module {
     }
 
     single { OsrmApi(get()) }
-    single { OverpassApi(get()) }
+    single { ProtomapsTileApi(get()) }
     single { RoadCache(get()) }
     single<RouteRepository> { RouteRepositoryImpl(get()) }
 

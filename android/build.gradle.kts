@@ -85,6 +85,9 @@ dependencies {
 
     implementation("com.getpebble:pebblekit:4.0.1")
 
+    implementation("com.wdtinc:mapbox-vector-tile:3.1.0")
+    implementation("org.locationtech.jts:jts-core:1.19.0")
+
     testImplementation("junit:junit:4.13.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
