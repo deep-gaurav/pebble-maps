@@ -695,7 +695,7 @@ private fun WatchDebugCanvas(
 
         fun toScreenOffset(xMeters: Double, yMeters: Double): Offset {
             val nx = (xMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
-            val ny = (-yMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+            val ny = (-yMeters / halfViewport * 0.7 + 0.8).coerceIn(0.0, 1.0)
             return Offset(
                 padding + (nx * usableWidth).toFloat(),
                 padding + (ny * usableHeight).toFloat()
@@ -736,7 +736,7 @@ private fun WatchDebugCanvas(
         }
 
         // Draw center point (current location)
-        drawCircle(color = ComposeColor.Green, radius = 4f, center = Offset(centerX, centerY))
+        drawCircle(color = ComposeColor.Green, radius = 4f, center = Offset(centerX, height * 0.8f))
     }
 }
 

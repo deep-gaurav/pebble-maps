@@ -194,7 +194,7 @@ static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_c
 
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  GPoint screen_center = GPoint(bounds.size.w / 2, bounds.size.h / 2);
+  GPoint screen_center = GPoint(bounds.size.w / 2, bounds.size.h * 4 / 5);
 
   if (s_has_roads) {
     int ri = 0;

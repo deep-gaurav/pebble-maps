@@ -187,7 +187,7 @@ fun WatchPreviewCanvas(
 
         fun ViewportPoint.toScreenOffset(): Offset {
             val nx = (xMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
-            val ny = (-yMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+            val ny = (-yMeters / halfViewport * 0.7 + 0.8).coerceIn(0.0, 1.0)
             return Offset(
                 padding + (nx * usableWidth).toFloat(),
                 padding + (ny * usableHeight).toFloat()
@@ -219,7 +219,7 @@ fun WatchPreviewCanvas(
             }
         }
 
-        drawCircle(color = Color.Green, radius = 8f, center = Offset(centerX, centerY))
+        drawCircle(color = Color.Green, radius = 8f, center = Offset(centerX, height * 0.8f))
 
         val turnText = when (frame.turnDirection) {
             TurnDirection.RIGHT -> "\u2192"

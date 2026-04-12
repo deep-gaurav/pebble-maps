@@ -201,7 +201,7 @@ class PebbleWatchManager(private val context: Context) {
 
     private fun packSinglePoint(point: ViewportPoint, halfViewport: Double): Pair<Int, Int> {
         val nx = (point.xMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
-        val ny = (-point.yMeters / halfViewport * 0.5 + 0.5).coerceIn(0.0, 1.0)
+        val ny = (-point.yMeters / halfViewport * 0.7 + 0.8).coerceIn(0.0, 1.0)
         return Pair(
             (nx * 255).toInt().coerceIn(0, 254),
             (ny * 255).toInt().coerceIn(0, 254)
