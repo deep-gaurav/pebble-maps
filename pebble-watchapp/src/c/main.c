@@ -24,23 +24,18 @@ static bool s_has_roads = false;
 static uint8_t s_turn_direction = 0;
 static int32_t s_distance_to_turn = 0;
 static int32_t s_distance_remaining = 0;
+static int32_t s_bearing = 0;
 static char s_street_name[21] = "";
 
-static GPoint rotate_point(GPoint p, GPoint center, int32_t angle_hundredths) {
-  if (angle_hundredths == 0) return p;
-
-  int32_t angle = (angle_hundredths * TRIG_MAX_ANGLE) / 36000;
-  int32_t c = cos_lookup(angle);
-  int32_t s = sin_lookup(angle);
-
-  int dx = p.x - center.x;
-  int dy = p.y - center.y;
-
-  int dx_rot = (int)((dx * c - dy * s) / TRIG_MAX_RATIO);
-  int dy_rot = (int)((dx * s + dy * c) / TRIG_MAX_RATIO);
-
-  return GPoint(center.x + dx_rot, center.y + dy_rot);
-}
+static GBitmap *s_bitmap_arrow_straight;
+static GBitmap *s_bitmap_arrow_slight_left;
+static GBitmap *s_bitmap_arrow_left;
+static GBitmap *s_bitmap_arrow_sharp_left;
+static GBitmap *s_bitmap_arrow_slight_right;
+static GBitmap *s_bitmap_arrow_right;
+static GBitmap *s_bitmap_arrow_sharp_right;
+static GBitmap *s_bitmap_arrow_uturn;
+static GBitmap *s_bitmap_arrow_none;
 
 static GPoint byte_to_screen(uint8_t x, uint8_t y) {
   uint16_t padding = 10;
@@ -79,6 +74,9 @@ static void update_data_from_dict(DictionaryIterator *iter) {
   tuple = dict_find(iter, MESSAGE_KEY_DISTANCE_REMAINING);
   if (tuple) s_distance_remaining = tuple->value->int32;
 
+  tuple = dict_find(iter, MESSAGE_KEY_BEARING);
+  if (tuple) s_bearing = tuple->value->int32;
+
   tuple = dict_find(iter, MESSAGE_KEY_STREET_NAME);
   if (tuple) {
     strncpy(s_street_name, tuple->value->cstring, sizeof(s_street_name) - 1);
@@ -100,37 +98,18 @@ static void update_data_from_dict(DictionaryIterator *iter) {
   }
 }
 
-static void draw_turn_arrow_shape(GContext *ctx, GPoint center, uint8_t dir) {
-  if (dir == 0) return;
-
-  int32_t angle = 0;
+static GBitmap* bitmap_for_turn(uint8_t dir) {
   switch (dir) {
-    case 2: angle = 4500; break;
-    case 3: angle = 9000; break;
-    case 4: angle = 13500; break;
-    case 5: angle = -4500; break;
-    case 6: angle = -9000; break;
-    case 7: angle = -13500; break;
-    case 8: angle = 18000; break;
-    default: angle = 0; break;
+    case 1: return s_bitmap_arrow_straight;
+    case 2: return s_bitmap_arrow_slight_left;
+    case 3: return s_bitmap_arrow_left;
+    case 4: return s_bitmap_arrow_sharp_left;
+    case 5: return s_bitmap_arrow_slight_right;
+    case 6: return s_bitmap_arrow_right;
+    case 7: return s_bitmap_arrow_sharp_right;
+    case 8: return s_bitmap_arrow_uturn;
+    default: return s_bitmap_arrow_none;
   }
-
-  GPoint tip = { center.x, center.y - 12 };
-  GPoint left = { center.x - 8, center.y + 4 };
-  GPoint right = { center.x + 8, center.y + 4 };
-  GPoint stem = { center.x, center.y + 8 };
-
-  tip = rotate_point(tip, center, angle);
-  left = rotate_point(left, center, angle);
-  right = rotate_point(right, center, angle);
-  stem = rotate_point(stem, center, angle);
-
-  graphics_context_set_stroke_color(ctx, GColorBlack);
-  graphics_context_set_stroke_width(ctx, 3);
-  graphics_draw_line(ctx, tip, left);
-  graphics_draw_line(ctx, tip, right);
-  graphics_draw_line(ctx, left, stem);
-  graphics_draw_line(ctx, right, stem);
 }
 
 static void format_distance(int32_t meters, char *buf, size_t size) {
@@ -140,13 +119,17 @@ static void format_distance(int32_t meters, char *buf, size_t size) {
   }
   if (meters < 1000) {
     snprintf(buf, size, "%dm", (int)meters);
-  } else {
-    double km = meters / 1000.0;
-    if (km < 10.0) {
-      snprintf(buf, size, "%.1fkm", km);
-    } else {
-      snprintf(buf, size, "%.0fkm", km);
+  } else if (meters < 10000) {
+    int km_whole = meters / 1000;
+    int km_tenth = ((meters % 1000) + 50) / 100;
+    if (km_tenth >= 10) {
+      km_whole++;
+      km_tenth = 0;
     }
+    snprintf(buf, size, "%d.%dkm", km_whole, km_tenth);
+  } else {
+    int km = (meters + 500) / 1000;
+    snprintf(buf, size, "%dkm", km);
   }
 }
 
@@ -157,6 +140,30 @@ static uint8_t road_half_width_for_class(uint8_t road_class) {
     case 1: return 2;
     default: return 1;
   }
+}
+
+static void draw_bearing_arrow(GContext *ctx, GPoint center) {
+  GPoint tip = { center.x, center.y - 10 };
+  GPoint right_wing = { center.x + 7, center.y + 5 };
+  GPoint right_stem = { center.x + 3, center.y + 5 };
+  GPoint bottom = { center.x, center.y + 8 };
+  GPoint left_stem = { center.x - 3, center.y + 5 };
+  GPoint left_wing = { center.x - 7, center.y + 5 };
+
+  GPoint arrow_pts[6] = { tip, right_wing, right_stem, bottom, left_stem, left_wing };
+  GPath path = {
+    .num_points = 6,
+    .points = arrow_pts,
+    .rotation = 0,
+    .offset = GPointZero,
+  };
+
+#ifdef PBL_COLOR
+  graphics_context_set_fill_color(ctx, GColorRed);
+#else
+  graphics_context_set_fill_color(ctx, GColorBlack);
+#endif
+  gpath_draw_filled(ctx, &path);
 }
 
 static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_class) {
@@ -195,6 +202,9 @@ static void draw_road_filled(GContext *ctx, GPoint p0, GPoint p1, uint8_t road_c
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   GPoint screen_center = GPoint(bounds.size.w / 2, bounds.size.h * 4 / 5);
+
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
   if (s_has_roads) {
     int ri = 0;
@@ -240,8 +250,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     graphics_fill_circle(ctx, s_points[s_destination_index], 4);
   }
 
-  graphics_context_set_fill_color(ctx, GColorGreen);
-  graphics_fill_circle(ctx, screen_center, 5);
+  draw_bearing_arrow(ctx, screen_center);
 
   int indicator_x = 8;
   int indicator_y = bounds.size.h - 55;
@@ -254,7 +263,17 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   graphics_context_set_stroke_width(ctx, 1);
   graphics_draw_rect(ctx, bg_rect);
 
-  draw_turn_arrow_shape(ctx, GPoint(indicator_x + indicator_size / 2, indicator_y + indicator_size / 2 - 2), s_turn_direction);
+  GBitmap *arrow = bitmap_for_turn(s_turn_direction);
+  if (arrow) {
+    GSize size = gbitmap_get_bounds(arrow).size;
+    GRect dest = GRect(
+      indicator_x + indicator_size / 2 - size.w / 2,
+      indicator_y + indicator_size / 2 - 2 - size.h / 2,
+      size.w,
+      size.h
+    );
+    graphics_draw_bitmap_in_rect(ctx, arrow, dest);
+  }
 
   char dist_buf[16];
   format_distance(s_distance_to_turn, dist_buf, sizeof(dist_buf));
@@ -266,6 +285,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
 static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   update_data_from_dict(iter);
+  APP_LOG(APP_LOG_LEVEL_INFO, "Msg rcv pts=%d roads=%d bearing=%d", s_num_points, s_road_data_len, s_bearing);
   if (s_canvas_layer) {
     layer_mark_dirty(s_canvas_layer);
   }
@@ -344,6 +364,16 @@ static void window_load(Window *window) {
   s_screen_w = bounds.size.w;
   s_screen_h = bounds.size.h;
 
+  s_bitmap_arrow_straight = gbitmap_create_with_resource(RESOURCE_ID_ARROW_STRAIGHT);
+  s_bitmap_arrow_slight_left = gbitmap_create_with_resource(RESOURCE_ID_ARROW_SLIGHT_LEFT);
+  s_bitmap_arrow_left = gbitmap_create_with_resource(RESOURCE_ID_ARROW_LEFT);
+  s_bitmap_arrow_sharp_left = gbitmap_create_with_resource(RESOURCE_ID_ARROW_SHARP_LEFT);
+  s_bitmap_arrow_slight_right = gbitmap_create_with_resource(RESOURCE_ID_ARROW_SLIGHT_RIGHT);
+  s_bitmap_arrow_right = gbitmap_create_with_resource(RESOURCE_ID_ARROW_RIGHT);
+  s_bitmap_arrow_sharp_right = gbitmap_create_with_resource(RESOURCE_ID_ARROW_SHARP_RIGHT);
+  s_bitmap_arrow_uturn = gbitmap_create_with_resource(RESOURCE_ID_ARROW_UTURN);
+  s_bitmap_arrow_none = gbitmap_create_with_resource(RESOURCE_ID_ARROW_NONE);
+
   window_set_background_color(window, GColorWhite);
 
   s_canvas_layer = layer_create(bounds);
@@ -354,7 +384,12 @@ static void window_load(Window *window) {
   app_message_register_inbox_dropped(inbox_dropped_callback);
   app_message_register_outbox_sent(outbox_sent_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
-  app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
+  const uint32_t inbox_size = 2048;
+  const uint32_t outbox_size = 256;
+  AppMessageResult open_result = app_message_open(inbox_size, outbox_size);
+  if (open_result != APP_MSG_OK) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "app_message_open failed: %d", (int)open_result);
+  }
 
   send_screen_size_to_phone();
   app_timer_register(1000, retry_send_screen_size, NULL);
@@ -364,6 +399,15 @@ static void window_load(Window *window) {
 
 static void window_unload(Window *window) {
   layer_destroy(s_canvas_layer);
+  gbitmap_destroy(s_bitmap_arrow_straight);
+  gbitmap_destroy(s_bitmap_arrow_slight_left);
+  gbitmap_destroy(s_bitmap_arrow_left);
+  gbitmap_destroy(s_bitmap_arrow_sharp_left);
+  gbitmap_destroy(s_bitmap_arrow_slight_right);
+  gbitmap_destroy(s_bitmap_arrow_right);
+  gbitmap_destroy(s_bitmap_arrow_sharp_right);
+  gbitmap_destroy(s_bitmap_arrow_uturn);
+  gbitmap_destroy(s_bitmap_arrow_none);
 }
 
 static void init() {

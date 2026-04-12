@@ -37,7 +37,18 @@
       "HAS_ROADS": 21
     },
     "resources": {
-      "media": []
+      "media": [
+        {"type": "bitmap", "name": "ARROW_STRAIGHT", "file": "arrow_straight.png"},
+        {"type": "bitmap", "name": "ARROW_SLIGHT_LEFT", "file": "arrow_slight_left.png"},
+        {"type": "bitmap", "name": "ARROW_LEFT", "file": "arrow_left.png"},
+        {"type": "bitmap", "name": "ARROW_SHARP_LEFT", "file": "arrow_sharp_left.png"},
+        {"type": "bitmap", "name": "ARROW_SLIGHT_RIGHT", "file": "arrow_slight_right.png"},
+        {"type": "bitmap", "name": "ARROW_RIGHT", "file": "arrow_right.png"},
+        {"type": "bitmap", "name": "ARROW_SHARP_RIGHT", "file": "arrow_sharp_right.png"},
+        {"type": "bitmap", "name": "ARROW_UTURN", "file": "arrow_uturn.png"},
+        {"type": "bitmap", "name": "ARROW_NONE", "file": "arrow_none.png"},
+        {"type": "bitmap", "name": "BEARING_ARROW", "file": "bearing_arrow.png"}
+      ]
     },
     "capabilities": ["configurable"]
   }

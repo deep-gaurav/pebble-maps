@@ -35,6 +35,7 @@ class PebbleWatchManager(private val context: Context) {
         const val KEY_SCREEN_HEIGHT = 11
         const val KEY_ROAD_POINTS = 14
         const val KEY_HAS_ROADS = 21
+        const val KEY_BEARING = 8
         const val KEY_ZOOM = 22
 
         private const val INTENT_APP_RECEIVE_ACK = "com.getpebble.action.app.RECEIVE_ACK"
@@ -150,6 +151,7 @@ class PebbleWatchManager(private val context: Context) {
             addUint8(KEY_NUM_ROUTE_POINTS, geometry.routePoints.size.toByte())
             addBytes(KEY_ROUTE_POINTS, routeBytes)
             addUint8(KEY_DESTINATION_INDEX, (geometry.destinationIndex ?: 255).toByte())
+            addInt32(KEY_BEARING, frame.bearing.toInt() * 100)
             addUint8(KEY_HAS_ROADS, if (roadBytes.isEmpty()) 0.toByte() else 1.toByte())
             addBytes(KEY_ROAD_POINTS, roadBytes)
         }
