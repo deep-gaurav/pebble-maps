@@ -1,6 +1,7 @@
 package com.pebblemaps.android.data.remote
 
 import android.util.Log
+import com.pebblemaps.android.BuildConfig
 import com.pebblemaps.android.domain.model.FeatureType
 import com.pebblemaps.android.domain.model.LatLng
 import com.pebblemaps.android.domain.model.MapFeature
@@ -24,7 +25,7 @@ import kotlin.math.tan
 
 class ProtomapsTileApi(private val client: HttpClient) {
 
-    private val apiKey = "REPLACE_ME_FROM_ENV"
+    private val apiKey = BuildConfig.PROTOMAPS_API_KEY
     private val baseUrl = "https://api.protomaps.com/tiles/v3"
     private val geometryFactory = GeometryFactory()
 

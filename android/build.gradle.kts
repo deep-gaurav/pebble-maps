@@ -18,6 +18,9 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        val protomapsKey = System.getenv("PROTOMAPS_API_KEY") ?: ""
+        buildConfigField("String", "PROTOMAPS_API_KEY", "\"$protomapsKey\"")
     }
 
     buildTypes {
@@ -41,6 +44,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {

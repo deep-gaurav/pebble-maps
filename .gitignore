@@ -34,3 +34,7 @@ PXL_*.jpg
 
 # Pebble build lock
 .lock-waf_*
+
+# Local env files
+.env
+*.env
