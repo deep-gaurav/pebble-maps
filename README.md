@@ -22,14 +22,14 @@ Turn-by-turn navigation on your Pebble smartwatch, powered by your Android phone
 
 ### Pebble Watchapp
 
-Available on the **Pebble App Store** — search for "Pebble Maps Nav".
+Download the latest `.pbw` from [GitHub Pre-release](../../releases/tag/pre-release) and sideload it via the Pebble app.
 
 ### Android Companion
 
 | Source | Link |
 |--------|------|
 | F-Droid | *Coming soon* |
-| GitHub Releases | [Latest Release](../../releases) |
+| GitHub Releases | [Latest Build](../../releases/tag/pre-release) |
 
 ## How It Works
 
