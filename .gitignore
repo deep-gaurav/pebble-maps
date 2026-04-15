@@ -20,3 +20,17 @@ Thumbs.db
 # Kotlin
 *.class
 *.kotlin_module
+
+# Pebble SDK docs (not needed in repo)
+sdk-docs/
+
+# Original screenshot with EXIF
+PXL_*.jpg
+
+# TLS certificates
+*.crt
+*.key
+*.pem
+
+# Pebble build lock
+.lock-waf_*

@@ -22,12 +22,17 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,14 +48,20 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.pebblemaps.android.domain.model.LocationManager
+import com.pebblemaps.android.ui.navigation.NavigationViewModel
+import org.koin.androidx.compose.koinViewModel
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 
 @Composable
-fun MapScreen() {
+fun MapScreen(
+    viewModel: NavigationViewModel = koinViewModel()
+) {
     val context = LocalContext.current
     var hasLocationPermission by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val state by viewModel.state.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -74,81 +85,114 @@ fun MapScreen() {
         }
     }
 
-    Box(
+    LaunchedEffect(Unit) {
+        viewModel.shareErrors.collect { message ->
+            snackbarHostState.showSnackbar(message)
+        }
+    }
+
+    Scaffold(
         modifier = Modifier
             .fillMaxSize()
-            .padding(top = 48.dp)
-    ) {
-        // Background map
-        OSMMapView(
-            context = context,
-            hasLocationPermission = hasLocationPermission,
-            modifier = Modifier.fillMaxSize()
-        )
-
-        // Foreground instructional card
-        Surface(
+            .padding(top = 48.dp),
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { paddingValues ->
+        Box(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(16.dp),
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-            shadowElevation = 8.dp
+                .fillMaxSize()
+                .padding(paddingValues)
         ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            // Background map
+            OSMMapView(
+                context = context,
+                hasLocationPermission = hasLocationPermission,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Foreground instructional card
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                shadowElevation = 8.dp
             ) {
-                Text(
-                    text = "Pebble Maps",
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Pebble Maps",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                // Permission status chip
-                PermissionStatusChip(
-                    granted = hasLocationPermission,
-                    onRequestPermission = {
-                        permissionLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                Manifest.permission.ACCESS_COARSE_LOCATION
+                    // Permission status chip
+                    PermissionStatusChip(
+                        granted = hasLocationPermission,
+                        onRequestPermission = {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                )
                             )
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Text(
+                        text = "How to start navigating:",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    InstructionStep(number = "1", text = "Open Google Maps")
+                    InstructionStep(number = "2", text = "Search for a destination and get directions")
+                    InstructionStep(number = "3", text = "Tap Share → choose Pebble Maps")
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Button(
+                        onClick = { openGoogleMaps(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LocationOn,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Open Google Maps")
+                    }
+                }
+            }
+
+            // Loading overlay when processing a share
+            if (state.isProcessingShare) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Opening directions…",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
                         )
                     }
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Text(
-                    text = "How to start navigating:",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                InstructionStep(number = "1", text = "Open Google Maps")
-                InstructionStep(number = "2", text = "Search for a destination and get directions")
-                InstructionStep(number = "3", text = "Tap Share → choose Pebble Maps")
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Button(
-                    onClick = { openGoogleMaps(context) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.LocationOn,
-                        contentDescription = null,
-                        modifier = Modifier.padding(end = 8.dp)
-                    )
-                    Text("Open Google Maps")
                 }
             }
         }

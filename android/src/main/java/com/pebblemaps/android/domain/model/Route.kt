@@ -51,8 +51,9 @@ data class NavigationState(
     val endLocation: LatLng? = null,
     val route: Route? = null,
     val currentStepIndex: Int = 0,
-    val profile: RouteProfile = RouteProfile.CYCLING,
+    val profile: RouteProfile = RouteProfile.DRIVING,
     val isLoading: Boolean = false,
+    val isProcessingShare: Boolean = false,
     val error: String? = null
 ) {
     val currentStep: Step?

@@ -38,6 +38,9 @@ class NavigationViewModel(
     private val _navigationEvents = Channel<String>(Channel.BUFFERED)
     val navigationEvents = _navigationEvents.receiveAsFlow()
 
+    private val _shareErrors = Channel<String>(Channel.BUFFERED)
+    val shareErrors = _shareErrors.receiveAsFlow()
+
     fun setRoute(route: Route) {
         _state.value = _state.value.copy(route = route, isLoading = false, error = null)
         updateWatchFrame()
@@ -91,6 +94,7 @@ class NavigationViewModel(
 
     fun processSharedUrl(url: String) {
         viewModelScope.launch {
+            _state.value = _state.value.copy(isProcessingShare = true)
             Log.d("NavigationViewModel", "Processing share URL: $url")
             val resolvedUrl = withContext(Dispatchers.IO) {
                 urlResolver.resolveShortUrl(url) ?: url
@@ -99,6 +103,8 @@ class NavigationViewModel(
             val directions = GoogleMapsUrlParser.parseDirectionsUrl(resolvedUrl)
             if (directions == null || directions.end == null) {
                 Log.w("NavigationViewModel", "Could not parse directions from URL: $resolvedUrl")
+                _state.value = _state.value.copy(isProcessingShare = false)
+                _shareErrors.send("Could not open shared directions")
                 return@launch
             }
 
@@ -111,14 +117,17 @@ class NavigationViewModel(
 
             if (start != null) {
                 calculateRouteSuspending()
+                _state.value = _state.value.copy(isProcessingShare = false)
                 if (_state.value.route != null) {
                     Log.d("NavigationViewModel", "Route ready, navigating to activeNavigation")
                     _navigationEvents.send("activeNavigation")
                 } else {
                     Log.w("NavigationViewModel", "Route calculation produced no route")
+                    _shareErrors.send("Could not calculate route")
                     _navigationEvents.send("navigation")
                 }
             } else {
+                _state.value = _state.value.copy(isProcessingShare = false)
                 Log.d("NavigationViewModel", "No start location, navigating to navigation screen")
                 _navigationEvents.send("navigation")
             }

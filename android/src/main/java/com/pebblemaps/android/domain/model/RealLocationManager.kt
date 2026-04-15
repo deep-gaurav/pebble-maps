@@ -19,6 +19,8 @@ object RealLocationManager {
     private var locationCallback: LocationCallback? = null
 
     private var currentRoute: Route? = null
+    private var smoothedSpeedKmh = 0.0
+    private const val SPEED_SMOOTHING_ALPHA = 0.3
 
     @SuppressLint("MissingPermission")
     fun startNavigation(route: Route, context: Context) {
@@ -44,8 +46,10 @@ object RealLocationManager {
             override fun onLocationResult(result: LocationResult) {
                 val loc = result.lastLocation ?: return
                 val latLng = LatLng(loc.latitude, loc.longitude)
+                val rawSpeedKmh = (loc.speed * 3.6).coerceAtLeast(0.0)
+                smoothedSpeedKmh = SPEED_SMOOTHING_ALPHA * rawSpeedKmh + (1.0 - SPEED_SMOOTHING_ALPHA) * smoothedSpeedKmh
                 val state = RouteProgressTracker.updateLocation(latLng)
-                    .copy(currentSpeedKmh = (loc.speed * 3.6).coerceAtLeast(0.0))
+                    .copy(currentSpeedKmh = rawSpeedKmh, smoothedSpeedKmh = smoothedSpeedKmh)
                 _locationState.value = state
             }
         }
@@ -65,6 +69,7 @@ object RealLocationManager {
         locationCallback = null
         fusedLocationClient = null
         currentRoute = null
+        smoothedSpeedKmh = 0.0
         _locationState.value = null
         Log.d(TAG, "Location updates stopped")
     }

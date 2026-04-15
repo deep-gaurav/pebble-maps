@@ -41,7 +41,7 @@ fun PebbleMapsNavHost(
         startDestination = "map"
     ) {
         composable("map") {
-            MapScreen()
+            MapScreen(viewModel = navigationViewModel)
         }
         composable("navigation") {
             NavigationScreen(

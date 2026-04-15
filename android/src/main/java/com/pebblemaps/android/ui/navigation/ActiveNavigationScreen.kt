@@ -1,12 +1,18 @@
 package com.pebblemaps.android.ui.navigation
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.Paint
+import android.os.Build
 import android.view.WindowManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -72,6 +78,7 @@ import com.pebblemaps.android.data.RoadCache
 import com.pebblemaps.android.data.pebble.PebbleWatchManager
 import com.pebblemaps.android.data.remote.ProtomapsTileApi
 import com.pebblemaps.android.domain.model.LatLng
+import com.pebblemaps.android.service.NavigationForegroundService
 import com.pebblemaps.android.domain.model.NavigationLocationState
 import com.pebblemaps.android.domain.model.RealLocationManager
 import com.pebblemaps.android.domain.model.Route
@@ -94,8 +101,10 @@ import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import kotlin.math.roundToInt
 
-private const val OFF_ROUTE_THRESHOLD_METERS = 80.0
+private const val OFF_ROUTE_THRESHOLD_METERS = 50.0
 private const val MIN_REROUTE_INTERVAL_MS = 10_000L
+private const val MIN_SPEED_FOR_ETA_KMH = 2.0
+private const val MAX_ETA_SECONDS = 14400.0 // 4 hours
 
 @Composable
 fun ActiveNavigationScreen(
@@ -118,6 +127,22 @@ fun ActiveNavigationScreen(
 
     val context = LocalContext.current
 
+    var hasNotificationPermission by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.POST_NOTIFICATIONS
+                    ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotificationPermission = granted
+    }
+
     DisposableEffect(Unit) {
         val activity = context as Activity
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -135,6 +160,12 @@ fun ActiveNavigationScreen(
             roadCache.prefetchEntireRoute(coordinates, 150.0)
             RealLocationManager.updateRoute(route)
             RealLocationManager.startNavigation(route, context)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            NavigationForegroundService.startNavigation(context)
+
             if (pebbleManager.isPebbleConnected()) {
                 pebbleManager.launchWatchApp()
             }
@@ -154,9 +185,7 @@ fun ActiveNavigationScreen(
             roadCache.refreshIfNeeded(loc.currentPosition, loc.smoothedBearing, viewportMeters)
             val nearbyRoads = roadCache.nearbyRoads.value
             val nearbyFeatures = roadCache.nearbyFeatures.value
-            val timeRemainingSeconds = if (loc.currentSpeedKmh > 0.5) {
-                loc.totalRemainingDistance / (loc.currentSpeedKmh / 3.6)
-            } else 0.0
+            val timeRemainingSeconds = computeEtaSeconds(loc.totalRemainingDistance, loc.smoothedSpeedKmh)
             if (nearbyRoads.isEmpty()) {
                 Log.w("NavScreen", "No roads available at ${loc.currentPosition}, viewport=${viewportMeters.toInt()}m")
             }
@@ -206,9 +235,7 @@ fun ActiveNavigationScreen(
                     ?.type
                 val viewportMeters = pebbleManager.getEffectiveViewportMeters()
                 val nearbyFeatures = roadCache.nearbyFeatures.value
-                val timeRemainingSeconds = if (m.currentSpeedKmh > 0.5) {
-                    m.totalRemainingDistance / (m.currentSpeedKmh / 3.6)
-                } else 0.0
+                val timeRemainingSeconds = computeEtaSeconds(m.totalRemainingDistance, m.smoothedSpeedKmh)
                 val frame = WatchFrame(
                     routePoints = route?.geometry?.coordinates ?: emptyList(),
                     currentLocation = m.currentPosition,
@@ -233,6 +260,7 @@ fun ActiveNavigationScreen(
     DisposableEffect(Unit) {
         onDispose {
             RealLocationManager.stopNavigation()
+            NavigationForegroundService.stopNavigation(context)
             pebbleManager.stopSending()
         }
     }
@@ -362,6 +390,7 @@ fun ActiveNavigationScreen(
         BottomNavigationPanel(
             remainingDistance = loc?.totalRemainingDistance ?: 0.0,
             currentSpeed = loc?.currentSpeedKmh ?: 0.0,
+            smoothedSpeed = loc?.smoothedSpeedKmh ?: 0.0,
             showDebug = showDebug,
             preparedGeometry = currentPreparedGeometry,
             viewportMeters = currentViewportMeters.toDouble(),
@@ -421,6 +450,7 @@ fun TurnIndicatorPanel(
 fun BottomNavigationPanel(
     remainingDistance: Double,
     currentSpeed: Double,
+    smoothedSpeed: Double,
     showDebug: Boolean,
     preparedGeometry: PreparedWatchGeometry?,
     viewportMeters: Double,
@@ -458,7 +488,7 @@ fun BottomNavigationPanel(
             ) {
                 StatItem(label = "Distance", value = formatDistance(remainingDistance))
                 StatItem(label = "Speed", value = "${currentSpeed.roundToInt()} km/h")
-                StatItem(label = "Time", value = if (currentSpeed > 0) formatDuration(remainingDistance / (currentSpeed / 3.6)) else "-- min")
+                StatItem(label = "Time", value = formatDuration(computeEtaSeconds(remainingDistance, smoothedSpeed)))
             }
 
             // Debug controls (animated visibility)
@@ -569,6 +599,12 @@ private fun formatDuration(seconds: Double): String {
         hours > 0 -> "${hours}h ${minutes}min"
         else -> "${minutes} min"
     }
+}
+
+private fun computeEtaSeconds(remainingDistance: Double, smoothedSpeedKmh: Double): Double {
+    if (smoothedSpeedKmh < MIN_SPEED_FOR_ETA_KMH) return 0.0
+    val seconds = remainingDistance / (smoothedSpeedKmh / 3.6)
+    return seconds.coerceIn(0.0, MAX_ETA_SECONDS)
 }
 
 private fun createDirectionArrow(bearing: Float): Bitmap {

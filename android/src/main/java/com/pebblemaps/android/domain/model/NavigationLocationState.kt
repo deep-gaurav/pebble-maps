@@ -8,5 +8,6 @@ data class NavigationLocationState(
     val totalRemainingDistance: Double,
     val currentStepIndex: Int,
     val distanceFromRoute: Double,
-    val currentSpeedKmh: Double = 0.0
+    val currentSpeedKmh: Double = 0.0,
+    val smoothedSpeedKmh: Double = 0.0
 )

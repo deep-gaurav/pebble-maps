@@ -8,6 +8,10 @@ object RouteProgressTracker {
     private const val MEDIUM_TURN_SMOOTHING_FACTOR = 0.35f
     private const val SHARP_TURN_SMOOTHING_FACTOR = 0.55f
 
+    private const val LOOK_BEHIND_SEGMENTS = 20
+    private const val LOOK_AHEAD_SEGMENTS = 50
+    private const val BACKWARD_SNAP_THRESHOLD_METERS = 25.0
+
     private var route: Route? = null
     private var allCoords: List<LatLng> = emptyList()
     private var cumulativeDistances: DoubleArray = doubleArrayOf()
@@ -15,11 +19,13 @@ object RouteProgressTracker {
     private var stepStartDistances: List<Double> = emptyList()
 
     private var smoothedBearing = 0f
+    private var lastProgressIndex = 0
 
     fun setRoute(route: Route) {
         this.route = route
         this.allCoords = route.geometry.coordinates
         this.smoothedBearing = 0f
+        this.lastProgressIndex = 0
 
         buildCumulativeDistances()
         buildStepStartDistances()
@@ -45,7 +51,7 @@ object RouteProgressTracker {
             )
         }
 
-        val (nearestIndex, projection, distanceFromRoute) = findNearestSegment(location)
+        val (nearestIndex, projection, distanceFromRoute) = findNearestSegmentWindowed(location)
         val segStart = allCoords[nearestIndex]
         val segEnd = allCoords[nearestIndex + 1]
         val segLength = haversineDistance(segStart, segEnd)
@@ -57,6 +63,10 @@ object RouteProgressTracker {
 
         val distanceTraveled = cumulativeDistances[nearestIndex] + distanceAlongSegment
         val remaining = (totalRouteDistance - distanceTraveled).coerceAtLeast(0.0)
+
+        if (nearestIndex > lastProgressIndex) {
+            lastProgressIndex = nearestIndex
+        }
 
         val bearing = calculateBearing(segStart, segEnd)
         smoothedBearing = lerpBearing(smoothedBearing, bearing, smoothingFactorForTurn(smoothedBearing, bearing))
@@ -111,15 +121,40 @@ object RouteProgressTracker {
         }
     }
 
-    private fun findNearestSegment(location: LatLng): Triple<Int, LatLng, Double> {
-        var bestIdx = 0
-        var bestProj = allCoords[0]
+    private fun findNearestSegmentWindowed(location: LatLng): Triple<Int, LatLng, Double> {
+        val maxIdx = allCoords.lastIndex
+
+        if (lastProgressIndex == 0 || maxIdx < 2) {
+            return findNearestSegmentInRange(location, 0, maxIdx)
+        }
+
+        val windowStart = (lastProgressIndex - LOOK_BEHIND_SEGMENTS).coerceAtLeast(0)
+        val windowEnd = (lastProgressIndex + LOOK_AHEAD_SEGMENTS).coerceAtMost(maxIdx)
+
+        val (bestIdx, bestProj, bestDist) = findNearestSegmentInRange(location, windowStart, windowEnd)
+
+        if (bestIdx >= lastProgressIndex) {
+            return Triple(bestIdx, bestProj, bestDist)
+        }
+
+        val (fwdIdx, fwdProj, fwdDist) = findNearestSegmentInRange(location, lastProgressIndex, windowEnd)
+        if (fwdDist < BACKWARD_SNAP_THRESHOLD_METERS) {
+            return Triple(fwdIdx, fwdProj, fwdDist)
+        }
+
+        return Triple(bestIdx, bestProj, fwdDist)
+    }
+
+    private fun findNearestSegmentInRange(location: LatLng, fromIdx: Int, toIdx: Int): Triple<Int, LatLng, Double> {
+        var bestIdx = fromIdx
+        var bestProj = allCoords[fromIdx]
         var bestDist = Double.MAX_VALUE
 
-        for (i in 0 until allCoords.lastIndex) {
+        val end = toIdx.coerceAtMost(allCoords.lastIndex)
+        for (i in fromIdx until end) {
             val start = allCoords[i]
-            val end = allCoords[i + 1]
-            val (proj, dist) = projectOntoSegment(location, start, end)
+            val segEnd = allCoords[i + 1]
+            val (proj, dist) = projectOntoSegment(location, start, segEnd)
             if (dist < bestDist) {
                 bestDist = dist
                 bestProj = proj
